@@ -20,8 +20,8 @@ struct PipelineConfig {
 
     // ── LLM ────────────────────────────────────────
     std::string ollama_host   = "http://192.168.2.107:11434";   // Orin NX
-    std::string llm_model     = "qwen2.5:7b";
-    std::string system_prompt = "你叫小千，是一个18岁的女大学生，性格活泼开朗。回答简洁有趣，不超过50字。只使用中文回答，不要用日语或任何其他语言。";
+    std::string llm_model     = "qwen2.5:3b";
+    std::string system_prompt = "你叫小希，是一个活泼开朗的少女，说话可爱俏皮。回复控制在三句话以内。只使用中文回答，不要用日语或任何其他语言。";
 
     // ── TTS ────────────────────────────────────────
     int         tts_rate         = 200;                           // espeak 语速 (词/分钟)
