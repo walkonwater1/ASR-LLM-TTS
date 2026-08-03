@@ -21,6 +21,7 @@
 #include "skill_memory.h"
 
 #include <iostream>
+#include <chrono>
 #include <cstdio>
 #include <cstdint>
 #include <cmath>
@@ -63,7 +64,7 @@ VoicePipeline::VoicePipeline(const PipelineConfig& cfg)
     : cfg_(cfg)
     , asr_(cfg.asr_model_path, parse_asr_model_type(cfg.asr_model_type))
     , llm_(cfg.ollama_host, cfg.llm_model, cfg.system_prompt)
-    , tts_(cfg.tts_rate, cfg.tts_voice, cfg.tts_backend, cfg.piper_model_path)
+    , tts_(cfg.tts_rate, cfg.tts_voice, cfg.tts_backend, cfg.piper_model_path, cfg.edge_tts_voice)
     , kws_(cfg.wake_word)
     , speaker_(cfg.sv_enroll_dir, cfg.sv_threshold)
     , memory_(cfg.max_rounds, cfg.max_tokens)
@@ -878,6 +879,7 @@ void VoicePipeline::speak_and_play(const std::string& text,
     if (cfg_.tts_backend == "piper") {
         tts_.synthesize(text, "", user_context);
     } else {
+        // espeak / edge_tts 需要输出 WAV 文件后播放
         const std::string tts_file = "temp_reply.wav";
         if (tts_.synthesize(text, tts_file, user_context)) {
             AudioPlayer::play(tts_file);
@@ -1332,6 +1334,8 @@ void VoicePipeline::process_loop()
 
         // ── 策略 1: ReAct 多步推理（skill 未命中时才用）─
         if (reply.empty() && react_ && !skill_hit) {
+            auto t_react = std::chrono::steady_clock::now();
+            int react_steps = 0;
             auto tools = skill_mgr_.collect_function_defs();
             if (!tools.empty()) {
                 auto exec_fn = [this](const std::string& name, const nlohmann::json& args) {
@@ -1339,10 +1343,15 @@ void VoicePipeline::process_loop()
                 };
                 std::string react_ctx = context.empty() ? extra : context + "\n" + extra;
                 auto result = react_->run(prompt, tools, exec_fn, react_ctx, cfg_.react_max_steps);
+                react_steps = (int)result.steps.size();
                 if (result.success && !result.final_answer.empty()) {
                     reply = result.final_answer;
                 }
             }
+            auto t_react_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t_react).count();
+            std::cout << "   [ReAct] " << t_react_ms << "ms"
+                      << " (" << react_steps << " steps)" << std::endl;
         }
 
         // ── 策略 2: 直接 LLM 回复 ───────────────────
@@ -1364,15 +1373,23 @@ void VoicePipeline::process_loop()
 
         // 5.5) 质量优化：Multi-Agent 或 Reflection
         if (multi_agent_) {
+            auto t_ma = std::chrono::steady_clock::now();
             std::string cmodel = cfg_.ma_critic_model.empty()
                 ? cfg_.llm_model : cfg_.ma_critic_model;
             auto ma = multi_agent_->collaborate(
                 prompt, reply, "", cfg_.system_prompt,
                 cfg_.llm_model, cmodel, cfg_.ma_max_rounds);
             reply = ma.final_answer;
+            auto t_ma_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t_ma).count();
+            std::cout << "   [MultiAgent] " << t_ma_ms << "ms" << std::endl;
         } else if (reflect_) {
+            auto t_ref = std::chrono::steady_clock::now();
             auto r = reflect_->reflect(prompt, reply);
             reply = r.improved;
+            auto t_ref_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t_ref).count();
+            std::cout << "   [Reflection] " << t_ref_ms << "ms" << std::endl;
         }
 
         // 6) 回复截断

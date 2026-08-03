@@ -16,14 +16,16 @@ class ProsodyController;
 
 class TTSEngine {
 public:
-    /// @param rate        espeak 语速
-    /// @param voice       espeak 音色
-    /// @param backend     "espeak" 或 "piper"
-    /// @param piper_model Piper 模型路径 (.onnx)
+    /// @param rate            espeak 语速
+    /// @param voice           espeak 音色
+    /// @param backend         "espeak" / "piper" / "edge_tts"
+    /// @param piper_model     Piper 模型路径 (.onnx)
+    /// @param edge_tts_voice  Edge TTS 音色 (如 zh-CN-XiaoyiNeural)
     explicit TTSEngine(int rate = 200,
                        const std::string& voice = "cmn+f3",
                        const std::string& backend = "espeak",
-                       const std::string& piper_model = "");
+                       const std::string& piper_model = "",
+                       const std::string& edge_tts_voice = "zh-CN-XiaoyiNeural");
     ~TTSEngine();
 
     TTSEngine(const TTSEngine&) = delete;
@@ -47,6 +49,8 @@ private:
     std::string backend_;
     std::string piper_model_;
     std::string piper_script_;
+    std::string edge_tts_voice_;
+    std::string edge_tts_script_;
     bool initialized_ = false;
 
     // Piper 常驻进程
@@ -62,6 +66,10 @@ private:
     bool init_piper();
     bool synthesize_piper(const std::string& text, const std::string& output_path);
     void shutdown_piper();
+
+    // edge_tts
+    bool init_edge_tts();
+    bool synthesize_edge_tts(const std::string& text, const std::string& output_path);
 
     /// 从 piper_out_ 读取指定长度数据
     bool read_exact(void* buf, size_t len);

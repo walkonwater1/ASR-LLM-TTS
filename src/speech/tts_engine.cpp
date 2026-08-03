@@ -1,8 +1,9 @@
 /**
- * 语音合成引擎 — 双后端（espeak-ng / Piper neural TTS）
+ * 语音合成引擎 — 三后端（espeak-ng / Piper neural TTS / Edge TTS）
  *
- * espeak: libespeak-ng 直接调用（快速但电音）
- * Piper:  常驻 Python 进程（模型只加载一次，后续调用低延迟）
+ * espeak:   libespeak-ng 直接调用（快速但电音）
+ * Piper:    常驻 Python 进程（模型只加载一次，后续调用低延迟）
+ * edge_tts: 微软云 TTS，one-shot Python 子进程（音质最好）
  */
 
 #include "tts_engine.h"
@@ -15,8 +16,11 @@
 #include <cstring>
 #include <cstdint>
 #include <iostream>
+#include <iomanip>
 #include <cstdio>
 #include <cstdlib>
+#include <sstream>
+#include <chrono>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -208,6 +212,61 @@ static std::string ensure_ending_punctuation(const std::string& text)
     return text + "。";
 }
 
+/// 判断 3 字节 UTF-8 字符是否为 CJK 汉字（排除 emoji/符号/平仮名等）
+static bool is_cjk_char_3byte(const char* p)
+{
+    unsigned char b0 = p[0], b1 = p[1], b2 = p[2];
+    int cp = ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F);
+    // CJK Unified Ideographs:      U+4E00–U+9FFF
+    // CJK Extension A:             U+3400–U+4DBF
+    // CJK Compatibility Ideographs:U+F900–U+FAFF
+    return (cp >= 0x4E00 && cp <= 0x9FFF)
+        || (cp >= 0x3400 && cp <= 0x4DBF)
+        || (cp >= 0xF900 && cp <= 0xFAFF);
+}
+
+/// 判断 UTF-8 字符是否可被 Piper 中文模型发音
+static bool is_pronounceable(const char* p, size_t char_bytes)
+{
+    if (char_bytes == 3) {
+        // CJK 汉字 → 可发音
+        if (is_cjk_char_3byte(p)) return true;
+        // 中文标点 → 保留（用于断句）
+        unsigned char a = p[0], b = p[1], c = p[2];
+        if (a == 0xE3 && b == 0x80) return (c == 0x82 || c == 0x81);  // 。，
+        if (a == 0xEF && b == 0xBC) return (c == 0x81 || c == 0x9F || c == 0x8C || c == 0x9B); // ！？，；
+        // 全角符号（，、：等）保留
+        return false;
+    }
+    if (char_bytes == 4) return false;   // 补充平面 emoji → 无法发音
+    if (char_bytes == 1) {
+        unsigned char c = static_cast<unsigned char>(p[0]);
+        // 允许 ASCII 标点、数字、字母（Piper 会自行处理）
+        return std::isprint(c);
+    }
+    return false;
+}
+
+/// 去掉 TTS 无法发音的字符（emoji、特殊符号等）
+static std::string remove_unpronounceable(const std::string& text)
+{
+    std::string result;
+    result.reserve(text.size());
+    for (size_t i = 0; i < text.size(); ) {
+        unsigned char c = static_cast<unsigned char>(text[i]);
+        size_t char_bytes = 1;
+        if (c >= 0xF0 && i + 3 < text.size()) char_bytes = 4;
+        else if (c >= 0xE0 && i + 2 < text.size()) char_bytes = 3;
+        else if (c >= 0xC0 && i + 1 < text.size()) char_bytes = 2;
+
+        if (is_pronounceable(&text[i], char_bytes)) {
+            result.append(text, i, char_bytes);
+        }
+        i += char_bytes;
+    }
+    return result;
+}
+
 /// 在逗号过少的长句中插入逗号改善停顿
 static std::string add_breathing_pauses(const std::string& text)
 {
@@ -219,11 +278,11 @@ static std::string add_breathing_pauses(const std::string& text)
         return false;
     };
 
-    // 遍历文本，每 ~12 个汉字后如果是连续汉字无标点，插入逗号
+    // 遍历文本，每 ~20 个 CJK 汉字后如果是连续汉字无标点，插入逗号
     std::string result;
     result.reserve(text.size() + text.size() / 10);
 
-    size_t chars_since_pause = 0;  // 距离上次停顿的汉字数
+    size_t chars_since_pause = 0;  // 距离上次停顿的 CJK 汉字数
 
     for (size_t i = 0; i < text.size(); ) {
         unsigned char c = static_cast<unsigned char>(text[i]);
@@ -236,9 +295,11 @@ static std::string add_breathing_pauses(const std::string& text)
             // 中文标点 → 重置计数器
             if (is_cn_punct(&text[i])) {
                 chars_since_pause = 0;
-            } else {
+            } else if (is_cjk_char_3byte(&text[i])) {
+                // 只对真正的 CJK 汉字计数（排除 emoji/符号）
                 ++chars_since_pause;
             }
+            // else: 非 CJK 的多字节字符（emoji/符号）→ 不计数
         } else if (c == ',' || c == '.' || c == '!' || c == '?') {
             // ASCII 标点 → 重置
             chars_since_pause = 0;
@@ -267,6 +328,9 @@ static std::string add_breathing_pauses(const std::string& text)
 static std::string preprocess_tts_text(const std::string& raw_text)
 {
     std::string text = raw_text;
+
+    // 0. 去掉 emoji/特殊符号（Piper 中文模型无法发音，且会干扰停顿计数）
+    text = remove_unpronounceable(text);
 
     // 1. 替换符号（在数字转换之前，避免干扰）
     text = replace_symbols(text);
@@ -373,11 +437,13 @@ static std::string find_script(const std::string& name)
 // ── TTSEngine ────────────────────────────────────────
 
 TTSEngine::TTSEngine(int rate, const std::string& voice,
-                     const std::string& backend, const std::string& piper_model)
+                     const std::string& backend, const std::string& piper_model,
+                     const std::string& edge_tts_voice)
     : rate_(rate)
     , voice_(voice)
     , backend_(backend)
     , piper_model_(piper_model)
+    , edge_tts_voice_(edge_tts_voice)
 {
     if (!piper_model_.empty()) {
         piper_model_ = expand_tilde(piper_model_);
@@ -399,12 +465,15 @@ TTSEngine::~TTSEngine()
     if (initialized_ && backend_ == "espeak") {
         espeak_Terminate();
     }
+    // edge_tts: no persistent process to clean up
 }
 
 bool TTSEngine::initialize()
 {
     if (backend_ == "piper") {
         return init_piper();
+    } else if (backend_ == "edge_tts") {
+        return init_edge_tts();
     } else {
         return init_espeak();
     }
@@ -459,18 +528,30 @@ bool TTSEngine::synthesize(const std::string& text, const std::string& output_pa
         // 3) 文本增强（标点）
         synth_text = prosody.enhanced_text;
 
-        // 4) 设置 espeak 语速
-        if (backend_ != "piper") {
+        // 4) 设置 espeak 语速（edge_tts 无需设置）
+        if (backend_ != "piper" && backend_ != "edge_tts") {
             espeak_SetParameter(espeakRATE, prosody.adjusted_rate, 0);
             rate_ = prosody.adjusted_rate;
         }
     }
 
+    auto t_tts_start = std::chrono::steady_clock::now();
+
+    bool ok = false;
     if (backend_ == "piper") {
-        return synthesize_piper(synth_text, output_path);
+        ok = synthesize_piper(synth_text, output_path);
+    } else if (backend_ == "edge_tts") {
+        ok = synthesize_edge_tts(synth_text, output_path);
     } else {
-        return synthesize_espeak(synth_text, output_path);
+        ok = synthesize_espeak(synth_text, output_path);
     }
+
+    auto t_tts_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t_tts_start).count();
+    std::cout << "   [TTS] " << backend_ << " " << t_tts_ms << "ms"
+              << (ok ? "" : " ❌") << std::endl;
+
+    return ok;
 }
 
 // ── espeak 后端 ─────────────────────────────────────
@@ -704,4 +785,75 @@ bool TTSEngine::synthesize_piper(const std::string& text, const std::string& out
 
     int status = pclose(aplay);
     return status == 0;
+}
+
+// ── Edge TTS 后端（微软云 TTS，one-shot 子进程）────────
+
+bool TTSEngine::init_edge_tts()
+{
+    std::cout << "[TTS] Edge TTS (" << edge_tts_voice_ << ") ... " << std::flush;
+
+    // 找到 edge_tts_cli.py 脚本（转为绝对路径）
+    std::string script = find_script("edge_tts_cli.py");
+    if (!file_exists(script)) {
+        std::cerr << "❌ 脚本未找到: " << script << std::endl;
+        return false;
+    }
+
+    // 转为绝对路径，避免 CWD 相关的问题
+    char abs_path[4096];
+    if (realpath(script.c_str(), abs_path)) {
+        edge_tts_script_ = abs_path;
+    } else {
+        edge_tts_script_ = script;
+    }
+    std::cout << "(" << edge_tts_script_ << ") " << std::flush;
+
+    // 验证 Python 环境和 edge_tts 库可用
+    std::string test_cmd = "python3 " + edge_tts_script_ + " --help > /dev/null 2>&1";
+    int ret = system(test_cmd.c_str());
+    if (ret != 0) {
+        std::cerr << "❌ edge_tts 不可用 (exit=" << ret << ", 请确认: pip install edge-tts)" << std::endl;
+        return false;
+    }
+
+    initialized_ = true;
+    LOG_INFO("✅");
+    return true;
+}
+
+bool TTSEngine::synthesize_edge_tts(const std::string& text, const std::string& output_path)
+{
+    if (output_path.empty()) {
+        LOG_ERROR("[TTS] edge_tts 需要指定 output_path");
+        return false;
+    }
+
+    // 预处理文本
+    std::string cleaned = preprocess_tts_text(text);
+    if (cleaned != text) {
+        std::cout << "   [TTS] 预处理: \"" << text << "\" → \"" << cleaned << "\"" << std::endl;
+    }
+
+    // 调用 one-shot 子进程
+    // 注意: 不依赖 pclose() 返回值，因为 voice_pipeline 可能有 SIGCHLD 干扰
+    // 直接检查输出文件是否生成成功即可
+    std::ostringstream cmd;
+    cmd << "python3 " << edge_tts_script_
+        << " --text " << std::quoted(cleaned)
+        << " --voice " << edge_tts_voice_
+        << " --output " << output_path
+        << " 2>/dev/null";
+
+    int ret = system(cmd.str().c_str());
+    // ret=-1 可能只是 SIGCHLD 干扰，不一定是真正的失败
+    // 关键: 检查输出文件是否生成
+
+    // 验证输出文件
+    if (!file_exists(output_path)) {
+        LOG_ERROR("[TTS] edge_tts 输出文件未生成: " + output_path);
+        return false;
+    }
+
+    return true;
 }

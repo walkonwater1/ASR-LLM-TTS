@@ -19,15 +19,16 @@ struct PipelineConfig {
     std::string asr_model_type = "sense_voice";      // "sense_voice" | "zipformer_ctc"
 
     // ── LLM ────────────────────────────────────────
-    std::string ollama_host   = "http://127.0.0.1:11434";
+    std::string ollama_host   = "http://192.168.2.107:11434";   // Orin NX
     std::string llm_model     = "qwen2.5:7b";
     std::string system_prompt = "你叫小千，是一个18岁的女大学生，性格活泼开朗。回答简洁有趣，不超过50字。只使用中文回答，不要用日语或任何其他语言。";
 
     // ── TTS ────────────────────────────────────────
     int         tts_rate         = 200;                           // espeak 语速 (词/分钟)
     std::string tts_voice        = "cmn+f3";                      // espeak 音色
-    std::string tts_backend      = "piper";                       // "espeak" 或 "piper"
+    std::string tts_backend      = "piper";                       // "espeak" / "piper" / "edge_tts"
     std::string piper_model_path = "~/pretrained_models/piper/zh_CN/zh_CN-xiao_ya-medium.onnx";
+    std::string edge_tts_voice   = "zh-CN-XiaoyiNeural";         // Edge TTS 音色
 
     // ── 唤醒词 ─────────────────────────────────────
     std::string wake_word = "zhan qi lai";   // 空字符串 = 关闭
