@@ -354,8 +354,9 @@ void StreamingASR::run_chunked_partial()
     }
 
     if (!garbage) {
-        std::cout << "   🎤 [部分#" << chunk_count_
-                  << " " << audio_duration() << "s] " << text << std::endl;
+        // 同一行更新，\r 回到行首覆盖上次输出
+        std::cout << "\r   🎤 [" << audio_duration() << "s] " << text
+                  << "                    " << std::flush;
     }
 }
 
@@ -383,6 +384,7 @@ std::string StreamingASR::run_chunked_final()
     last_chunk_time_ = 0.0f;
     chunk_count_     = 0;
 
-    std::cout << "   🎤 [最终 " << dur << "s] " << text << std::endl;
+    // 清除同行的部分识别残留，换行输出最终结果
+    std::cout << "\r\033[K   🎤 [最终 " << dur << "s] " << text << std::endl;
     return text;
 }

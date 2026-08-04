@@ -27,6 +27,7 @@
 #include <cmath>
 #include <cctype>
 #include <fstream>
+#include <vector>
 #include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -358,7 +359,7 @@ std::string VoicePipeline::process_text(const std::string& text)
     auto qual_ms  = std::chrono::duration_cast<std::chrono::milliseconds>(t_after_quality - t_after_llm).count();
     auto tts_play_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_after_quality).count();
     auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count();
-    LOG_INFO("⏱️  [延迟] 技能:{}ms | LLM:{}ms | 质检:{}ms | TTS+播放:{}ms | 总计:{}ms",
+    LOG_INFO("⏱️  [延迟] 技能:{}ms | LLM:{}ms | 质检:{}ms | TTS:{}ms | 总计:{}ms",
              skill_ms, llm_ms, qual_ms, tts_play_ms, total_ms);
 
     return reply;
@@ -954,6 +955,54 @@ void VoicePipeline::reload_config(const PipelineConfig& new_cfg)
              hot_changes, warn_changes);
 }
 
+// ── 辅助：按中文标点拆分句子（用于流式 TTS）────────
+
+static std::vector<std::string> split_sentences(const std::string& text)
+{
+    std::vector<std::string> sentences;
+    if (text.empty()) return sentences;
+
+    size_t start = 0;
+    for (size_t i = 0; i < text.size(); ) {
+        unsigned char c = static_cast<unsigned char>(text[i]);
+        size_t char_bytes = 1;
+        if (c >= 0xF0)      char_bytes = 4;
+        else if (c >= 0xE0) char_bytes = 3;
+        else if (c >= 0xC0) char_bytes = 2;
+
+        bool is_boundary = false;
+        if (char_bytes == 3 && i + 2 < text.size()) {
+            unsigned char b1 = text[i+1], b2 = text[i+2];
+            // 。！？… — 句末标点触发分割
+            if ((c == 0xE3 && b1 == 0x80 && b2 == 0x82) ||  // 。
+                (c == 0xEF && b1 == 0xBC && (b2 == 0x81 || b2 == 0x9F)) || // ！？
+                (c == 0xE2 && b1 == 0x80 && b2 == 0xA6))    // …
+            {
+                is_boundary = true;
+            }
+            // ；在下一个字符非空时也分割（长停顿）
+            if (c == 0xEF && b1 == 0xBC && b2 == 0x9B) {    // ；
+                is_boundary = true;
+            }
+        }
+
+        i += char_bytes;
+
+        if (is_boundary && i > start + 3) {  // 至少1个汉字+标点
+            sentences.push_back(text.substr(start, i - start));
+            start = i;
+        }
+    }
+
+    // 残留文本（没有句末标点的尾巴）
+    if (start < text.size()) {
+        std::string tail = text.substr(start);
+        if (!tail.empty()) sentences.push_back(tail);
+    }
+
+    return sentences;
+}
+
 void VoicePipeline::speak_and_play(const std::string& text,
                                      const std::string& user_context)
 {
@@ -1160,8 +1209,10 @@ void VoicePipeline::capture_loop()
                 // ？U+FF1F: EF BC 9F
                 if (b0 == 0xEF && b1 == 0xBC && b2 == 0x9F) ends_with_period = true;
             }
-            // 句尾标点 → 0.8s；普通稳定 → 1.5s
-            int threshold = ends_with_period ? 40 : 75;
+            // 句尾标点 → 快速端点；普通稳定 → 稍长（可配置）
+            int threshold = ends_with_period
+                ? cfg_.asr_endpoint_punct_frames
+                : cfg_.asr_endpoint_nopunct_frames;
             if (asr_stable_frames >= threshold) {
                 asr_endpoint = true;
             }
@@ -1630,44 +1681,55 @@ void VoicePipeline::process_loop()
                 auto llm_ms    = std::chrono::duration_cast<std::chrono::milliseconds>(t_after_llm - t_after_skill).count();
                 auto qual_ms   = std::chrono::duration_cast<std::chrono::milliseconds>(t_after_quality - t_after_llm).count();
                 auto tts_ms    = std::chrono::duration_cast<std::chrono::milliseconds>(t_after_tts - t_after_quality).count();
-                auto play_ms   = std::chrono::duration_cast<std::chrono::milliseconds>(t_after_play - t_after_tts).count();
                 auto total_ms  = std::chrono::duration_cast<std::chrono::milliseconds>(t_after_play - t_pipeline_start).count();
-                LOG_INFO("⏱️  [延迟] 技能:{}ms | LLM:{}ms | 质检:{}ms | TTS:{}ms | 播放:{}ms | 总计:{}ms",
-                         skill_ms, llm_ms, qual_ms, tts_ms, play_ms, total_ms);
+                LOG_INFO("⏱️  [延迟] 技能:{}ms | LLM:{}ms | 质检:{}ms | TTS:{}ms | 总计:{}ms",
+                         skill_ms, llm_ms, qual_ms, tts_ms, total_ms);
             }
         } else {
-            const std::string tts_file = "temp_reply_interactive_" + std::to_string(my_gen) + ".wav";
-            if (!tts_.synthesize(reply, tts_file, prompt, ve)) {
-                LOG_ERROR("   ❌ TTS 合成失败");
-                process_busy_ = false;
-                continue;
-            }
+            // ── 流式 TTS：逐句合成+播放 ──
+            auto sentences = split_sentences(reply);
+            if (sentences.empty()) sentences.push_back(reply);
 
             auto t_after_tts = std::chrono::steady_clock::now();
+            int  tts_total_ms = 0;
 
-            // 最后检查（TTS 后）
-            if (my_gen < generation_.load()) {
-                std::cout << "   ⏭️ 语音段 #" << my_gen << " 在 TTS 后过期" << std::endl;
+            for (size_t si = 0; si < sentences.size(); ++si) {
+                if (my_gen < generation_.load()) {
+                    std::cout << "   ⏭️ 语音段 #" << my_gen << " 在TTS播放中过期" << std::endl;
+                    break;
+                }
+
+                const std::string tts_file = "temp_reply_"
+                    + std::to_string(my_gen) + "_" + std::to_string(si) + ".wav";
+                if (!tts_.synthesize(sentences[si], tts_file, prompt, ve)) {
+                    LOG_ERROR("   ❌ TTS 合成失败(句子{}/{})", si+1, sentences.size());
+                    continue;
+                }
+
+                auto t_after_s = std::chrono::steady_clock::now();
+                tts_total_ms += std::chrono::duration_cast<std::chrono::milliseconds>(
+                    t_after_s - t_after_tts).count();
+                t_after_tts = t_after_s;
+
+                // 播放前检查
+                if (my_gen < generation_.load()) {
+                    std::remove(tts_file.c_str());
+                    break;
+                }
+
+                LOG_INFO("   🔊 [{}/{}] \"{}\"", si+1, sentences.size(), sentences[si]);
+                is_playing_ = true;
+                pid_t pid = AudioPlayer::play_async(tts_file);
+                player_pid_ = pid;
+                if (pid > 0) {
+                    int status;
+                    waitpid(pid, &status, 0);
+                    pid_t expected = pid;
+                    player_pid_.compare_exchange_strong(expected, -1);
+                }
+                is_playing_ = false;
                 std::remove(tts_file.c_str());
-                process_busy_ = false;
-                continue;
             }
-
-            // 7) 异步播放（可被打断）
-            LOG_INFO("   🔊 播放中...");
-            is_playing_ = true;
-            pid_t pid = AudioPlayer::play_async(tts_file);
-            player_pid_ = pid;
-
-            if (pid > 0) {
-                int status;
-                waitpid(pid, &status, 0);
-                pid_t expected = pid;
-                player_pid_.compare_exchange_strong(expected, -1);
-            }
-
-            is_playing_ = false;
-            std::remove(tts_file.c_str());
 
             auto t_after_play = std::chrono::steady_clock::now();
 
@@ -1675,11 +1737,9 @@ void VoicePipeline::process_loop()
             auto skill_ms  = std::chrono::duration_cast<std::chrono::milliseconds>(t_after_skill - t_pipeline_start).count();
             auto llm_ms    = std::chrono::duration_cast<std::chrono::milliseconds>(t_after_llm - t_after_skill).count();
             auto qual_ms   = std::chrono::duration_cast<std::chrono::milliseconds>(t_after_quality - t_after_llm).count();
-            auto tts_ms    = std::chrono::duration_cast<std::chrono::milliseconds>(t_after_tts - t_after_quality).count();
-            auto play_ms   = std::chrono::duration_cast<std::chrono::milliseconds>(t_after_play - t_after_tts).count();
             auto total_ms  = std::chrono::duration_cast<std::chrono::milliseconds>(t_after_play - t_pipeline_start).count();
-            LOG_INFO("⏱️  [延迟] 技能:{}ms | LLM:{}ms | 质检:{}ms | TTS:{}ms | 播放:{}ms | 总计:{}ms",
-                     skill_ms, llm_ms, qual_ms, tts_ms, play_ms, total_ms);
+            LOG_INFO("⏱️  [延迟] 技能:{}ms | LLM:{}ms | 质检:{}ms | TTS:{}ms(逐句{}段) | 总计:{}ms",
+                     skill_ms, llm_ms, qual_ms, tts_total_ms, sentences.size(), total_ms);
         }
 
         // 处理完成 → capture 线程可以继续收集新语音段

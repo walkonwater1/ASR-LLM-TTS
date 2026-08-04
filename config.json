@@ -76,7 +76,9 @@
     "backend": "chunked",
     "model": "",
     "min_chunk": 0.8,
-    "chunk_intv": 0.5
+    "chunk_intv": 0.5,
+    "endpoint_punct_frames": 15,
+    "endpoint_nopunct_frames": 30
   },
   "embedding": {
     "backend": "onnx",

@@ -100,6 +100,8 @@ struct PipelineConfig {
     std::string streaming_asr_model  = "";          // online 模型路径（空=复用 asr_model_path）
     float  streaming_min_chunk  = 0.8f;             // chunked: 最小触发长度 (秒)
     float  streaming_chunk_intv = 0.5f;             // chunked: 部分识别间隔 (秒)
+    int    asr_endpoint_punct_frames   = 15;        // 句末标点后稳定帧数→端点 (20ms/帧, 15=300ms)
+    int    asr_endpoint_nopunct_frames = 30;        // 无标点稳定帧数→端点 (30=600ms)
 
     // ── Embedding (Layer 4.2) ──────────────────────────
     std::string embedding_backend   = "ollama";     // "ollama" | "onnx"

@@ -166,6 +166,8 @@ bool PipelineConfig::load_from_file(const std::string& path)
         try_get(s, "model",     streaming_asr_model);
         try_get(s, "min_chunk", streaming_min_chunk);
         try_get(s, "chunk_intv", streaming_chunk_intv);
+        try_get(s, "endpoint_punct_frames",   asr_endpoint_punct_frames);
+        try_get(s, "endpoint_nopunct_frames", asr_endpoint_nopunct_frames);
     }
 
     // ── 技能 ────────────────────────────────────────
