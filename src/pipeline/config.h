@@ -15,11 +15,11 @@
 
 struct PipelineConfig {
     // ── ASR ────────────────────────────────────────
-    std::string asr_model_path = "src/third_party/sherpa-onnx/sense-voice-model";
-    std::string asr_model_type = "sense_voice";      // "sense_voice" | "zipformer_ctc"
+    std::string asr_model_path = "src/third_party/sherpa-onnx/zipformer-ctc-zh";
+    std::string asr_model_type = "zipformer_ctc";   // "sense_voice" | "zipformer_ctc"
 
     // ── LLM ────────────────────────────────────────
-    std::string ollama_host   = "http://192.168.2.107:11434";   // Orin NX
+    std::string ollama_host   = "http://localhost:11434";
     std::string llm_model     = "qwen2.5:3b";
     std::string system_prompt = "你叫小希，是一个活泼开朗的少女，说话可爱俏皮。回复控制在三句话以内。只使用中文回答，不要用日语或任何其他语言。";
 

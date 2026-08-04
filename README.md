@@ -1,4 +1,4 @@
-# 🎙️ 小千 — 全链路本地语音 AI 助手
+# 🎙️ 小希 — 全链路本地语音 AI 助手
 
 **13,000+ 行 C++17，76 个单元测试，从麦克风采集到语音合成，完整的本地语音交互系统。**
 
@@ -19,19 +19,19 @@
 │  ┌──────────┐   ┌──────────┐   ┌──────────────────────┐        │
 │  │ 流式 ASR  │   │ LLM 推理 │   │   14 个 Skill 技能    │        │
 │  │Zipformer │   │ qwen2.5  │   │ 时间|计算|天气|笔记|  │        │
-│  │chunk 0.5s│   │ + ReAct  │   │ 提醒|诗词|笑话|占卜|  │        │
-│  └──────────┘   │+Reflect  │   │ 谜语|游戏|搜索|RAG   │        │
-│                  └─────┬────┘   └──────────┬───────────┘        │
-│                        ↓                   ↓                    │
+│  │chunk 0.5s│   │  + RAG   │   │ 提醒|诗词|笑话|占卜|  │        │
+│  └──────────┘   └─────┬────┘   │ 谜语|游戏|搜索|RAG   │        │
+│                        ↓        └──────────┬───────────┘        │
 │                  ┌─────────────────────────────────┐            │
-│                  │   混合调度：FunctionCalling      │            │
-│                  │   (LLM驱动) → 关键字匹配(降级)    │            │
+│                  │   关键字匹配调度（确定性路由）     │            │
+│                  │   内容型技能 direct 模式交付      │            │
 │                  └───────────────┬─────────────────┘            │
 │                                  ↓                              │
 │  ┌──────────┐   ┌──────────┐   ┌──────────┐                   │
 │  │ TTS 播放 │←──│ 韵律融合 │←──│ 回复生成 │                   │
-│  │Piper/aio │   │ 情感+语速│   │          │                   │
-│  └──────────┘   └──────────┘   └──────────┘                   │
+│  │edge_tts  │   │ 情感+语速│   │          │                   │
+│  │/Piper    │   └──────────┘   └──────────┘                   │
+│  └──────────┘                                                   │
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────┐       │
 │  │  长期记忆 (JSON持久化) │ 声纹库 (多用户) │ WebSocket  │       │
@@ -51,16 +51,17 @@
 | **声纹** | 3D-Speaker CAM++ | 多用户注册/识别，dim=192 |
 | **唤醒词** | 拼音匹配 | 可选，支持400+常用汉字 |
 | **情感** | 声学特征分析 | 实时音高/语速/能量 → 融合TTS韵律 |
-| **TTS** | Piper + espeak-ng | pypinyin/g2pw双音素模式，情感驱动韵律 |
+| **TTS** | edge_tts / Piper + espeak-ng | 多后端可切换，情感驱动韵律 |
 
 ### 🧠 智能推理
 | 模块 | 技术 | 说明 |
 |------|------|------|
 | **LLM** | Ollama + qwen2.5:3b | 本地CPU推理，~660ms首响应 |
-| **ReAct** | 多步推理 | LLM自主调用工具链解决复杂任务 |
-| **Reflection** | 自我反思 | 可选，LLM审视修正自己的回复 |
-| **Multi-Agent** | Generator+Critic | 可选，双模型协作提升回复质量 |
 | **RAG** | 本地ONNX Embedding | 文档语义检索增强生成 |
+| **FunctionCalling** | LLM驱动函数调用 | 可选（默认关闭），小模型JSON输出不稳定 |
+| **ReAct** | 多步推理 | 可选（默认关闭），LLM自主调用工具链 |
+| **Reflection** | 自我反思 | 可选（默认关闭），LLM审视修正回复 |
+| **Multi-Agent** | Generator+Critic | 可选（默认关闭），双模型协作 |
 
 ### 🔧 14个技能
 ```
@@ -69,7 +70,7 @@
 娱乐类:  笑话 · 故事 · 冷知识 · 毒鸡汤 · 唐诗宋词 · 谜语 · 占卜(星座/塔罗/黄历) · 猜数字/成语接龙
 ```
 
-**混合调度架构**：LLM Function Calling 优先 → 关键字匹配自动降级。内容型技能(诗词/笑话/故事)使用 `direct` 模式直接交付，绕过LLM避免小模型截断。
+**关键字匹配调度**：使用确定性关键字路由技能，避免小模型 Function Calling 输出不稳定。内容型技能(诗词/笑话/故事)使用 `direct` 模式直接交付，绕过LLM避免小模型截断。
 
 ### 🏗️ 工程特性
 - **多线程交互**：Capture线程持续录音 + Process线程异步推理，支持语音打断
@@ -87,7 +88,7 @@
 
 ASR (Zipformer CTC INT8, 351MB):     ~50 ms/段      (实时率 0.05x)
 LLM (qwen2.5:3b, 2GB):               ~660 ms/短回复
-TTS (Piper huayan-medium, ~50MB):     ~480 ms/短句
+TTS (edge_tts/Piper):                 ~480 ms/短句
 
 端到端延迟:
   短交互 (你好→回复):   ~1.5s  (ASR+LLM+TTS)
@@ -179,10 +180,12 @@ src/
     "model_type": "zipformer_ctc"
   },
   "llm": { "host": "http://localhost:11434", "model": "qwen2.5:3b" },
-  "tts": { "backend": "piper", "rate": 200 },
+  "tts": { "backend": "edge_tts", "rate": 200 },
   "vad": { "backend": "adaptive", "adaptive_factor": 7.0, "min_energy": 0.025 }
 }
 ```
+
+> **实验性功能**：`function_calling`、`react`、`reflection`、`multi_agent` 默认关闭，详见 `config.json` 中的开关。
 
 ### 多机部署
 
@@ -191,7 +194,7 @@ LLM 可与 ASR/TTS 分离部署：
 ```
 ┌─ 客户端 ──────────────────────────┐      ┌─ 服务器 ──────────────┐
 │  ASR (Zipformer CTC)              │      │                       │
-│  TTS (Piper / espeak-ng)          │ LAN  │  Ollama (Qwen2.5)    │
+│  TTS (edge_tts / Piper)           │ LAN  │  Ollama (Qwen2.5)    │
 │  VAD + 声纹 + 情感                │─────▶│  HTTP API :11434     │
 │  VoicePipeline (管线编排)          │      │                       │
 └───────────────────────────────────┘      └───────────────────────┘
@@ -207,8 +210,8 @@ LLM 可与 ASR/TTS 分离部署：
 2. **为什么用 qwen2.5:3b 而不是更大的模型？**
    CPU本地推理的延迟/内存权衡。通过关键字兜底调度和`direct`交付模式弥补小模型在Function Calling和长文本上的不足。
 
-3. **为什么技能调度是混合模式而非纯Function Calling？**
-   小模型Function Calling输出不稳定(畸形JSON)。关键字作为确定性降级方案确保技能始终可用。
+3. **为什么技能调度使用关键字匹配而非纯 Function Calling？**
+   小模型Function Calling输出不稳定(畸形JSON)。关键字匹配作为确定性方案确保技能始终可用。Function Calling 作为可选增强保留。
 
 4. **为什么 VAD + ASR稳定性双重端点检测？**
    纯VAD在持续噪声中无法检测静音。ASR文本稳定性检测作为互补——文本1.5s不变即判定说完，1.0s if 以。！？结尾。
@@ -217,11 +220,11 @@ LLM 可与 ASR/TTS 分离部署：
 
 | 组件 | 技术 | 说明 |
 |------|------|------|
-| 语言 | C++17 | 全项目100个文件 |
+| 语言 | C++17 | 全项目~100个文件 |
 | 构建 | CMake | 3.16+ |
 | ASR | sherpa-onnx C API v1.13+ | ONNX Runtime |
 | LLM | Ollama HTTP API | OpenAI兼容接口 |
-| TTS | Piper + espeak-ng | 双后端可切换 |
+| TTS | edge_tts / Piper + espeak-ng | 多后端可切换 |
 | 声纹 | CAM++ | sherpa-onnx speaker embedding |
 | Embedding | BERT ONNX | 本地512维向量 |
 | JSON | nlohmann/json | header-only |

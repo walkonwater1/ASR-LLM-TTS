@@ -155,6 +155,8 @@ private:
     std::atomic<bool> process_busy_{false};   // 处理中（含推理+TTS），capture 线程暂停收集新段
     std::atomic<pid_t> player_pid_{-1};
     std::atomic<int>   generation_{0};      // 每次新语音段 +1，推理线程检查是否过期
+    bool speech_timeout_warned_ = false;   // 10s超时告警去重（capture 线程独占）
+    bool asr_endpoint_logged_ = false;    // ASR端点日志去重（capture 线程独占）
 
     std::thread capture_thread_;
     std::thread process_thread_;

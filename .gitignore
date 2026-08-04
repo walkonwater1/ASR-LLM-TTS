@@ -70,6 +70,7 @@ out_answer/
 # Third-party downloaded binaries (sherpa-onnx)
 src/third_party/
 
-# Voiceprint library (runtime data)
+# Voiceprint library (runtime data — contains biometric voice data)
+speaker_voice/
 speaker_voice_library/
 voiceprint_library/

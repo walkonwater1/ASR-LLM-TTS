@@ -147,7 +147,7 @@ std::string LLMEngine::chat(const std::string& user_message,
 
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - t0).count();
-    std::cout << "   [LLM] " << elapsed << "ms"
+    std::cout << "   [LLM] " << model_ << " " << elapsed << "ms"
               << " (" << reply.size() << " chars)" << std::endl;
 
     return reply;
