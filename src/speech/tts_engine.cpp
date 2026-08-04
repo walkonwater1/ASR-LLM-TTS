@@ -125,6 +125,19 @@ static std::string replace_numbers(const std::string& text)
     return result;
 }
 
+/// 判断 3 字节 UTF-8 字符是否为 CJK 汉字（排除 emoji/符号/平仮名等）
+static bool is_cjk_char_3byte(const char* p)
+{
+    unsigned char b0 = p[0], b1 = p[1], b2 = p[2];
+    int cp = ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F);
+    // CJK Unified Ideographs:      U+4E00–U+9FFF
+    // CJK Extension A:             U+3400–U+4DBF
+    // CJK Compatibility Ideographs:U+F900–U+FAFF
+    return (cp >= 0x4E00 && cp <= 0x9FFF)
+        || (cp >= 0x3400 && cp <= 0x4DBF)
+        || (cp >= 0xF900 && cp <= 0xFAFF);
+}
+
 /// 替换常见符号和英文缩写为中文
 static std::string replace_symbols(const std::string& text)
 {
@@ -157,8 +170,31 @@ static std::string replace_symbols(const std::string& text)
 
     // 去掉残留的纯英文单词（中音 Piper 模型无英文音素）
     // 保留中文 + 标点，ASCII 字母连续序列全部丢弃
+    // 但先判断文本是否以中文为主 — 如果英文占比过高（如错误消息），
+    // 跳过 ASCII 剥离，避免把 "Couldn't connect to server" 变成乱码
     std::string cleaned;
     cleaned.reserve(result.size());
+
+    // 统计 CJK 字符数 vs ASCII 字母数
+    size_t cjk_count = 0, ascii_alpha_count = 0;
+    for (size_t j = 0; j < result.size(); ) {
+        unsigned char cj = static_cast<unsigned char>(result[j]);
+        if (cj >= 0xE0 && cj < 0xF0 && j + 2 < result.size()) {
+            if (is_cjk_char_3byte(&result[j])) ++cjk_count;
+            j += 3;
+        } else if (cj >= 0x80) {
+            size_t cl = 1;
+            if (cj >= 0xF0) cl = 4;
+            else if (cj >= 0xE0) cl = 3;
+            else if (cj >= 0xC0) cl = 2;
+            j += (j + cl <= result.size()) ? cl : 1;
+        } else {
+            if (std::isalpha(cj)) ++ascii_alpha_count;
+            ++j;
+        }
+    }
+    bool mostly_chinese = (cjk_count > 0) && (cjk_count >= ascii_alpha_count);
+
     size_t i = 0;
     while (i < result.size()) {
         unsigned char c = static_cast<unsigned char>(result[i]);
@@ -177,8 +213,8 @@ static std::string replace_symbols(const std::string& text)
                 ++i;
             }
         }
-        // ASCII 字母：整段丢弃（Piper 中文模型无法发音）
-        else if (std::isalpha(c)) {
+        // ASCII 字母：仅当文本以中文为主时才丢弃
+        else if (mostly_chinese && std::isalpha(c)) {
             while (i < result.size() && std::isalpha(static_cast<unsigned char>(result[i]))) {
                 ++i;
             }
@@ -210,19 +246,6 @@ static std::string ensure_ending_punctuation(const std::string& text)
 
     // 没有标点 → 加句号
     return text + "。";
-}
-
-/// 判断 3 字节 UTF-8 字符是否为 CJK 汉字（排除 emoji/符号/平仮名等）
-static bool is_cjk_char_3byte(const char* p)
-{
-    unsigned char b0 = p[0], b1 = p[1], b2 = p[2];
-    int cp = ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F);
-    // CJK Unified Ideographs:      U+4E00–U+9FFF
-    // CJK Extension A:             U+3400–U+4DBF
-    // CJK Compatibility Ideographs:U+F900–U+FAFF
-    return (cp >= 0x4E00 && cp <= 0x9FFF)
-        || (cp >= 0x3400 && cp <= 0x4DBF)
-        || (cp >= 0xF900 && cp <= 0xFAFF);
 }
 
 /// 判断 UTF-8 字符是否可被 Piper 中文模型发音
