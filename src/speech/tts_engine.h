@@ -41,7 +41,8 @@ public:
     /// @param voice_emo    声学情感分析结果（Layer 3.3，可选）
     bool synthesize(const std::string& text, const std::string& output_path,
                     const std::string& user_context = "",
-                    const VoiceEmotionResult* voice_emo = nullptr);
+                    const VoiceEmotionResult* voice_emo = nullptr,
+                    bool is_ssml = false);
 
 private:
     int rate_;
@@ -69,7 +70,8 @@ private:
 
     // edge_tts
     bool init_edge_tts();
-    bool synthesize_edge_tts(const std::string& text, const std::string& output_path);
+    bool synthesize_edge_tts(const std::string& text, const std::string& output_path,
+                              bool is_ssml = false);
 
     /// 从 piper_out_ 读取指定长度数据
     bool read_exact(void* buf, size_t len);

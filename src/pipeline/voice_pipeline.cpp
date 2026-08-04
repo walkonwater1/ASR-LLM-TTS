@@ -1643,15 +1643,17 @@ void VoicePipeline::process_loop()
         memory_.add(prompt, reply);
         save_all_memory();  // 持久化到磁盘
 
-        reply = strip_emoji(reply);
-        std::cout << "   🤖 回复: \"" << reply << "\"" << std::endl;
+        // SSML 检测（唱歌等 skill 输出 SSML，跳过 emoji 过滤）
+        bool is_ssml = (reply.size() > 7 && reply.substr(0, 7) == "<speak>");
+        if (!is_ssml) reply = strip_emoji(reply);
+        std::cout << "   🤖 回复: \"" << (is_ssml ? "[SSML歌曲]" : reply) << "\"" << std::endl;
 
         // 7) TTS + 播放（传递声学情感用于韵律融合）
         const VoiceEmotionResult* ve = seg.voice_emo.confidence > 0.0f ? &seg.voice_emo : nullptr;
         if (cfg_.tts_backend == "piper") {
             // Piper：写出 WAV → 异步播放（可被打断）
             const std::string tts_wav = "temp_reply_interactive_piper.wav";
-            if (tts_.synthesize(reply, tts_wav, prompt, ve)) {
+            if (tts_.synthesize(reply, tts_wav, prompt, ve, is_ssml)) {
                 auto t_after_tts = std::chrono::steady_clock::now();
 
                 // 播放前最后检查是否过期（推理中可能已有新语音段入队）
@@ -1686,6 +1688,37 @@ void VoicePipeline::process_loop()
                          skill_ms, llm_ms, qual_ms, tts_ms, total_ms);
             }
         } else {
+            // ── SSML/流式 TTS ──
+            // SSML 不拆句（歌曲格式已定），普通文本逐句合成+播放
+            if (is_ssml) {
+                const std::string tts_file = "temp_reply_ssml_" + std::to_string(my_gen) + ".wav";
+                if (tts_.synthesize(reply, tts_file, prompt, ve, true)) {
+                    LOG_INFO("   🎵 播放歌曲...");
+                    is_playing_ = true;
+                    pid_t pid = AudioPlayer::play_async(tts_file);
+                    player_pid_ = pid;
+                    if (pid > 0) {
+                        int status; waitpid(pid, &status, 0);
+                        pid_t expected = pid;
+                        player_pid_.compare_exchange_strong(expected, -1);
+                    }
+                    is_playing_ = false;
+                    std::remove(tts_file.c_str());
+                } else {
+                    LOG_ERROR("   ❌ SSML 歌曲合成失败");
+                }
+                auto t_after_play = std::chrono::steady_clock::now();
+                auto skill_ms  = std::chrono::duration_cast<std::chrono::milliseconds>(t_after_skill - t_pipeline_start).count();
+                auto llm_ms    = std::chrono::duration_cast<std::chrono::milliseconds>(t_after_llm - t_after_skill).count();
+                auto total_ms  = std::chrono::duration_cast<std::chrono::milliseconds>(t_after_play - t_pipeline_start).count();
+                LOG_INFO("⏱️  [延迟] 技能:{}ms | LLM:{}ms | TTS(SSML):{}ms | 总计:{}ms",
+                         skill_ms, llm_ms,
+                         std::chrono::duration_cast<std::chrono::milliseconds>(t_after_play - t_after_quality).count(),
+                         total_ms);
+                process_busy_ = false;
+                continue;
+            }
+
             // ── 流式 TTS：逐句合成+播放 ──
             auto sentences = split_sentences(reply);
             if (sentences.empty()) sentences.push_back(reply);

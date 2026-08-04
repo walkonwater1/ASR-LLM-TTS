@@ -24,6 +24,7 @@
 #include "skills/skill_fortune.h"
 #include "skills/skill_poetry.h"
 #include "skills/skill_games.h"
+#include "skills/skill_sing.h"
 #include "function_caller.h"
 #include "embedding_engine.h"
 
@@ -48,6 +49,7 @@ SkillManager::SkillManager()
     add_skill(std::make_unique<FortuneSkill>());
     add_skill(std::make_unique<PoetrySkill>());
     add_skill(std::make_unique<GamesSkill>());
+    add_skill(std::make_unique<SingSkill>());
 }
 
 void SkillManager::add_skill(std::unique_ptr<Skill> skill)

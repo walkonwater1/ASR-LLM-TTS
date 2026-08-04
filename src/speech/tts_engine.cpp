@@ -504,9 +504,25 @@ bool TTSEngine::initialize()
 
 bool TTSEngine::synthesize(const std::string& text, const std::string& output_path,
                             const std::string& user_context,
-                            const VoiceEmotionResult* voice_emo)
+                            const VoiceEmotionResult* voice_emo,
+                            bool is_ssml)
 {
     if (!initialized_) return false;
+
+    // SSML 模式：跳过所有文本预处理和韵律分析，直接合成
+    if (is_ssml) {
+        if (backend_ == "edge_tts") {
+            auto t_start = std::chrono::steady_clock::now();
+            bool ok = synthesize_edge_tts(text, output_path, true);
+            auto t_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t_start).count();
+            std::cout << "   [TTS] edge_tts(SSML) " << t_ms << "ms"
+                      << (ok ? "" : " ❌") << std::endl;
+            return ok;
+        }
+        // piper/espeak 不支持 SSML，降级为普通合成
+        LOG_WARN("[TTS] {} 后端不支持SSML，降级为普通合成", backend_);
+    }
 
     // ── 韵律分析：文本情感 + 声学情感 → 融合 → 调整语速 + 增强文本 ──
     std::string synth_text = text;
@@ -845,26 +861,35 @@ bool TTSEngine::init_edge_tts()
     return true;
 }
 
-bool TTSEngine::synthesize_edge_tts(const std::string& text, const std::string& output_path)
+bool TTSEngine::synthesize_edge_tts(const std::string& text, const std::string& output_path,
+                                     bool is_ssml)
 {
     if (output_path.empty()) {
         LOG_ERROR("[TTS] edge_tts 需要指定 output_path");
         return false;
     }
 
-    // 预处理文本
-    std::string cleaned = preprocess_tts_text(text);
-    if (cleaned != text) {
-        std::cout << "   [TTS] 预处理: \"" << text << "\" → \"" << cleaned << "\"" << std::endl;
+    std::string content = text;
+
+    // SSML 模式：跳过预处理，直接使用原始 SSML
+    if (!is_ssml) {
+        content = preprocess_tts_text(text);
+        if (content != text) {
+            std::cout << "   [TTS] 预处理: \"" << text << "\" → \"" << content << "\"" << std::endl;
+        }
     }
 
     // 调用 one-shot 子进程
     // 注意: 不依赖 pclose() 返回值，因为 voice_pipeline 可能有 SIGCHLD 干扰
     // 直接检查输出文件是否生成成功即可
     std::ostringstream cmd;
-    cmd << "python3 " << edge_tts_script_
-        << " --text " << std::quoted(cleaned)
-        << " --voice " << edge_tts_voice_
+    cmd << "python3 " << edge_tts_script_;
+    if (is_ssml) {
+        cmd << " --ssml " << std::quoted(content);
+    } else {
+        cmd << " --text " << std::quoted(content);
+    }
+    cmd << " --voice " << edge_tts_voice_
         << " --output " << output_path
         << " 2>/dev/null";
 
