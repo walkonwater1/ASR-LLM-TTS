@@ -12,6 +12,7 @@
  */
 
 #include <string>
+#include <vector>
 
 struct PipelineConfig {
     // ── ASR ────────────────────────────────────────
@@ -52,8 +53,15 @@ struct PipelineConfig {
 
     // ── 交互模式 ───────────────────────────────────
     bool  barge_in_enabled      = true;    // 播放时允许语音打断
-    float barge_in_energy_ratio = 2.0f;    // 打断能量倍数（当前帧/回声基线 > 此值触发）
+    float barge_in_energy_ratio = 2.0f;    // 能量门控：当前帧/回声基线 > 此值 → 启动ASR语义检测
     int   max_response_chars    = 80;      // 回复最大字数（超出截断），0=不限制
+    bool  barge_in_semantic     = true;    // 语义打断：ASR识别到打断意图短语才打断（false=纯能量打断）
+    std::vector<std::string> barge_in_phrases = {
+        "别说了", "不想听", "不要说了", "停下", "停",
+        "闭嘴", "够了", "别念了", "别讲了", "别吵了",
+        "我不想听了", "别再说了", "可以停了", "别说了行不行",
+        "好了好了", "行了行了", "知道了知道了"
+    };
 
     // ── 对话记忆 ───────────────────────────────────
     int max_rounds = 10;

@@ -1177,7 +1177,7 @@ void VoicePipeline::capture_loop()
             speech_timeout = true;
         }
 
-        // ── 打断检测：播放中检测用户语音 → 停止播放 ────
+        // ── 打断检测：播放中检测用户语音 → 语义匹配 → 停止播放 ────
         if (cfg_.barge_in_enabled && playing) {
             // 计算当前帧 RMS
             float rms = 0.0f;
@@ -1190,40 +1190,115 @@ void VoicePipeline::capture_loop()
                 echo_baseline = (echo_baseline * echo_frames + rms) / (echo_frames + 1);
                 echo_frames++;
                 barge_in_frames = 0;
+                barge_speech_seen_ = false;
             } else if (rms > echo_baseline * cfg_.barge_in_energy_ratio) {
                 // 能量显著高于回声基线 → 可能是用户语音
                 barge_in_frames++;
+                barge_speech_seen_ = true;
+
+                // ── 语义打断：ASR识别打断意图短语 ──
+                if (cfg_.barge_in_semantic && stream_asr_.initialized()) {
+                    if (!barge_asr_active_) {
+                        stream_asr_.cancel();
+                        stream_asr_.start_utterance();
+                        barge_asr_active_ = true;
+                        barge_last_partial_.clear();
+                        barge_stable_frames_ = 0;
+                    }
+                    stream_asr_.feed(float_buf.data(), frame_samples);
+
+                    const char* p = stream_asr_.partial();
+                    std::string cur = (p && p[0]) ? std::string(p) : "";
+                    if (!cur.empty()) {
+                        if (cur == barge_last_partial_) {
+                            barge_stable_frames_++;
+                        } else {
+                            barge_stable_frames_ = 0;
+                            barge_last_partial_ = cur;
+                        }
+                        // 稳定 3 帧 (60ms) 后匹配打断短语
+                        if (barge_stable_frames_ >= 3) {
+                            bool matched = false;
+                            std::string matched_phrase;
+                            for (auto& phrase : cfg_.barge_in_phrases) {
+                                if (cur.find(phrase) != std::string::npos) {
+                                    matched = true;
+                                    matched_phrase = phrase;
+                                    break;
+                                }
+                            }
+                            if (matched) {
+                                pid_t pid = player_pid_.exchange(-1);
+                                if (pid > 0) AudioPlayer::stop_async(pid);
+                                LOG_INFO("\n🧠 语义打断: \"{}\" → 已停止！", matched_phrase);
+
+                                is_playing_ = false;
+                                process_busy_ = false;
+                                playing = false;
+                                barge_in_frames = 0;
+                                echo_frames = 0;
+                                barge_asr_active_ = false;
+                                barge_speech_seen_ = false;
+                                vad->reset();
+                                speech_timeout_warned_ = false;
+                                asr_endpoint_logged_ = false;
+                                if (stream_asr_.initialized()) {
+                                    stream_asr_.cancel();
+                                    stream_asr_.start_utterance();
+                                }
+                                asr_last_partial.clear();
+                                asr_stable_frames = 0;
+                            }
+                        }
+                    }
+                } else if (!cfg_.barge_in_semantic) {
+                    // 纯能量打断（兼容模式）：持续 300ms（15帧）→ 打断
+                    if (barge_in_frames > 15) {
+                        pid_t pid = player_pid_.exchange(-1);
+                        if (pid > 0) {
+                            AudioPlayer::stop_async(pid);
+                            LOG_INFO("\n🔴 能量打断: 语音持续 {}ms，已停止播放！", barge_in_frames * 20);
+                        }
+                        is_playing_ = false;
+                        process_busy_ = false;
+                        playing = false;
+                        barge_in_frames = 0;
+                        echo_frames = 0;
+                        barge_speech_seen_ = false;
+                        vad->reset();
+                        speech_timeout_warned_ = false;
+                        asr_endpoint_logged_ = false;
+                        if (stream_asr_.initialized()) {
+                            stream_asr_.cancel();
+                            stream_asr_.start_utterance();
+                        }
+                        asr_last_partial.clear();
+                        asr_stable_frames = 0;
+                    }
+                }
             } else {
                 // 更新回声基线（慢速自适应）
                 echo_baseline = echo_baseline * 0.95f + rms * 0.05f;
                 barge_in_frames = 0;
-            }
-
-            // 持续 300ms（15 帧）高于基线 → 触发打断
-            if (barge_in_frames > 15) {
-                pid_t pid = player_pid_.exchange(-1);
-                if (pid > 0) {
-                    AudioPlayer::stop_async(pid);
-                    LOG_INFO("\n🔴 检测到真实语音，已打断当前播放！");
-                }
-                // 关键：立即允许 capture 线程收集新语音
-                is_playing_ = false;
-                process_busy_ = false;
-                playing = false;
-                barge_in_frames = 0;
-                echo_frames = 0;
-                // 重置 VAD + ASR 以捕获打断语音
-                vad->reset();
-                speech_timeout_warned_ = false;
-                asr_endpoint_logged_ = false;
-                if (stream_asr_.initialized()) {
+                // 语音消失 → 取消打断ASR
+                if (barge_asr_active_ && barge_speech_seen_) {
                     stream_asr_.cancel();
-                    stream_asr_.start_utterance();
+                    barge_asr_active_ = false;
+                    barge_last_partial_.clear();
+                    barge_stable_frames_ = 0;
+                    barge_speech_seen_ = false;
                 }
             }
         } else {
             barge_in_frames = 0;
             echo_frames = 0;
+            barge_speech_seen_ = false;
+            if (barge_asr_active_) {
+                stream_asr_.cancel();
+                barge_asr_active_ = false;
+                barge_last_partial_.clear();
+                barge_stable_frames_ = 0;
+            }
         }
 
         // 语音段结束 → 入队（推理中也允许收集，但播放中除外以防止回声误触发）

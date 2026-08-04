@@ -31,6 +31,11 @@ static void try_get(const json& j, const char* key, T& target)
                 target = val.get<float>();
             else if constexpr (std::is_same_v<T, std::string>)
                 target = val.get<std::string>();
+            else if constexpr (std::is_same_v<T, std::vector<std::string>>) {
+                target.clear();
+                for (auto& item : val)
+                    target.push_back(item.get<std::string>());
+            }
         }
     }
 }
@@ -110,6 +115,8 @@ bool PipelineConfig::load_from_file(const std::string& path)
         try_get(it, "barge_in_enabled",      barge_in_enabled);
         try_get(it, "barge_in_energy_ratio", barge_in_energy_ratio);
         try_get(it, "max_response_chars",    max_response_chars);
+        try_get(it, "barge_in_semantic",     barge_in_semantic);
+        try_get(it, "barge_in_phrases",      barge_in_phrases);
     }
 
     // ── 对话记忆 ───────────────────────────────────

@@ -158,6 +158,12 @@ private:
     bool speech_timeout_warned_ = false;   // 10s超时告警去重（capture 线程独占）
     bool asr_endpoint_logged_ = false;    // ASR端点日志去重（capture 线程独占）
 
+    // ── 语义打断状态（capture 线程独占）────────────
+    bool barge_asr_active_      = false;  // 打断ASR是否已启动
+    bool barge_speech_seen_     = false;  // 本轮打断是否检测到过真实语音
+    std::string barge_last_partial_;      // 上次打断ASR部分结果
+    int  barge_stable_frames_   = 0;      // partial连续稳定帧数
+
     std::thread capture_thread_;
     std::thread process_thread_;
 

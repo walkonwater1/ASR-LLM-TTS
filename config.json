@@ -4,7 +4,7 @@
     "model_type": "zipformer_ctc"
   },
   "llm": {
-    "host": "http://localhost:11434",
+    "host": "http://192.168.2.107:11434",
     "model": "qwen2.5:3b",
     "system_prompt": "你是小希，一个活泼开朗的少女，说话可爱俏皮。回复控制在三句话以内。\n\n核心规则：\n1. 用户消息里已包含的信息（城市名、日期、数字等）直接提取使用，绝对不要反问确认\n2. 不要复读用户原话，不要用\"看样子你在说\"\"你是想说\"这类开头，直接回应问题本身\n3. 没听清时只说\"没太听清，能再说一遍吗？\"，不要猜测\n4. 不要在回复里提到自己的名字\n5. 只使用中文，禁止日语或任何其他语言\n6. 当前时间: {time}"
   },
@@ -36,9 +36,16 @@
     "cooldown_frames": 25
   },
   "interactive": {
-    "barge_in_enabled": false,
+    "barge_in_enabled": true,
     "barge_in_energy_ratio": 2.0,
-    "max_response_chars": 60
+    "max_response_chars": 60,
+    "barge_in_semantic": true,
+    "barge_in_phrases": [
+      "别说了", "不想听", "不要说了", "停下", "停",
+      "闭嘴", "够了", "别念了", "别讲了", "别吵了",
+      "我不想听了", "别再说了", "可以停了", "别说了行不行",
+      "好了好了", "行了行了", "知道了知道了"
+    ]
   },
   "memory": {
     "max_rounds": 10,
