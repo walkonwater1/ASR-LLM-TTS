@@ -146,9 +146,15 @@ private:
 
     /// TTS 合成 + 播放（单次模式使用）
     void speak_and_play(const std::string& text,
-                         const std::string& user_context = "");
+                         const std::string& user_context = "",
+                         bool is_ssml = false);
 
     // ── 交互模式内部状态 ─────────────────────────
+
+    // 助手状态机: SLEEP=等待唤醒词, ACTIVE=正常对话
+    enum class AssistantState { SLEEP, ACTIVE };
+    AssistantState assistant_state_ = AssistantState::SLEEP;
+    std::chrono::steady_clock::time_point last_active_time_;
 
     std::atomic<bool> interactive_running_{false};
     std::atomic<bool> is_playing_{false};

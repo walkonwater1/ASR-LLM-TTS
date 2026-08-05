@@ -107,11 +107,16 @@ VoicePipeline::VoicePipeline(const PipelineConfig& cfg)
     , asr_(cfg.asr_model_path, parse_asr_model_type(cfg.asr_model_type))
     , llm_(cfg.ollama_host, cfg.llm_model, cfg.system_prompt)
     , tts_(cfg.tts_rate, cfg.tts_voice, cfg.tts_backend, cfg.piper_model_path, cfg.edge_tts_voice)
-    , kws_(cfg.wake_word)
+    , kws_(cfg.wake_words.empty() ? cfg.wake_word : "" )
     , speaker_(cfg.sv_enroll_dir, cfg.sv_threshold)
     , memory_(cfg.max_rounds, cfg.max_tokens)
     , recorder_(cfg.sample_rate)
 {
+    // 多唤醒词：在构造函数体中重新初始化 kws_
+    if (!cfg_.wake_words.empty()) {
+        kws_ = WakeWordDetector(cfg_.wake_words);
+    }
+
     // 根据配置启用/禁用技能
     skill_mgr_.set_enabled("weather",    cfg.skill_weather);
     skill_mgr_.set_enabled("time",       cfg.skill_time);
@@ -332,14 +337,15 @@ std::string VoicePipeline::process_text(const std::string& text)
     if (reply.empty()) return "";
 
     // ── 质量优化：Multi-Agent 协作 或 Reflection 反思 ──
-    if (multi_agent_) {
+    // 直接技能回复（如唱歌SSML）不经过质量模块
+    if (multi_agent_ && !sr.direct) {
         std::string cmodel = cfg_.ma_critic_model.empty()
             ? cfg_.llm_model : cfg_.ma_critic_model;
         auto ma = multi_agent_->collaborate(
             text, reply, /*tool_context*/"",
             cfg_.system_prompt, cfg_.llm_model, cmodel, cfg_.ma_max_rounds);
         reply = ma.final_answer;
-    } else if (reflect_) {
+    } else if (reflect_ && !sr.direct) {
         auto r = reflect_->reflect(text, reply);
         reply = r.improved;
     }
@@ -348,8 +354,9 @@ std::string VoicePipeline::process_text(const std::string& text)
 
     memory_.add(text, reply);
     save_all_memory();  // 持久化
-    reply = strip_emoji(reply);
-    speak_and_play(reply, text);
+    bool is_ssml_onetime = (reply.size() >= 6 && reply.substr(0, 6) == "<speak");
+    if (!is_ssml_onetime) reply = strip_emoji(reply);
+    speak_and_play(reply, text, is_ssml_onetime);
 
     auto t_end = std::chrono::steady_clock::now();
 
@@ -815,6 +822,13 @@ void VoicePipeline::reload_config(const PipelineConfig& new_cfg)
     // 唤醒词
     if (diff_str("wake_word", cfg_.wake_word, new_cfg.wake_word, cfg_.wake_word))
         hot_changes++;
+    if (cfg_.wake_words != new_cfg.wake_words) {
+        cfg_.wake_words = new_cfg.wake_words;
+        hot_changes++;
+    }
+    diff_str("wake_reply",         cfg_.wake_reply,         new_cfg.wake_reply,          cfg_.wake_reply);
+    diff_val("idle_sleep_seconds", cfg_.idle_sleep_seconds, new_cfg.idle_sleep_seconds,  cfg_.idle_sleep_seconds);
+    diff_str("sleep_message",      cfg_.sleep_message,      new_cfg.sleep_message,       cfg_.sleep_message);
 
     // 声纹阈值
     if (diff_val("sv_threshold", cfg_.sv_threshold, new_cfg.sv_threshold, cfg_.sv_threshold))
@@ -1004,16 +1018,17 @@ static std::vector<std::string> split_sentences(const std::string& text)
 }
 
 void VoicePipeline::speak_and_play(const std::string& text,
-                                     const std::string& user_context)
+                                     const std::string& user_context,
+                                     bool is_ssml)
 {
     LOG_INFO("   🔊 播放中...");
 
     if (cfg_.tts_backend == "piper") {
-        tts_.synthesize(text, "", user_context);
+        tts_.synthesize(text, "", user_context, nullptr, is_ssml);
     } else {
         // espeak / edge_tts 需要输出 WAV 文件后播放
         const std::string tts_file = "temp_reply.wav";
-        if (tts_.synthesize(text, tts_file, user_context)) {
+        if (tts_.synthesize(text, tts_file, user_context, nullptr, is_ssml)) {
             AudioPlayer::play(tts_file);
             std::remove(tts_file.c_str());
         }
@@ -1043,13 +1058,20 @@ void VoicePipeline::run_interactive()
         segment_queue_ = std::queue<Segment>();
     }
 
-    LOG_INFO("std::endl");
     LOG_INFO("============================================================");
-    LOG_INFO("  🎤 交互模式已启动（支持语音打断）");
-    LOG_INFO("  直接说话即可交互，机器人说话时你可以随时打断");
-    LOG_INFO("  按 Ctrl+C 退出交互模式");
+    LOG_INFO("  🎤 语音助手已启动");
+    if (kws_.enabled()) {
+        std::string ww_list;
+        for (size_t i = 0; i < cfg_.wake_words.size(); ++i) {
+            if (i > 0) ww_list += ", ";
+            ww_list += cfg_.wake_words[i];
+        }
+        LOG_INFO("  💤 等待唤醒词: {}", ww_list);
+        assistant_state_ = AssistantState::SLEEP;
+        last_active_time_ = std::chrono::steady_clock::now();
+    }
+    LOG_INFO("  按 Ctrl+C 退出");
     LOG_INFO("============================================================");
-    LOG_INFO("std::endl");
 
     // 启动两个工作线程
     capture_thread_ = std::thread(&VoicePipeline::capture_loop, this);
@@ -1248,7 +1270,8 @@ void VoicePipeline::capture_loop()
                 barge_speech_seen_ = true;
 
                 // ── 语义打断：ASR识别打断意图短语 ──
-                if (cfg_.barge_in_semantic && stream_asr_.initialized()) {
+                bool semantic_available = cfg_.barge_in_semantic && stream_asr_.initialized();
+                if (semantic_available) {
                     if (!barge_asr_active_) {
                         stream_asr_.cancel();
                         stream_asr_.start_utterance();
@@ -1302,9 +1325,20 @@ void VoicePipeline::capture_loop()
                             }
                         }
                     }
-                } else if (!cfg_.barge_in_semantic) {
-                    // 纯能量打断（兼容模式）：持续 300ms（15帧）→ 打断
-                    if (barge_in_frames > 15) {
+                } else {
+                    // ── 能量打断（语义ASR不可用或关闭时自动激活）──
+                    // 默认阈值: 300ms (15帧@20ms) 持续高能量语音 → 打断
+                    int energy_threshold = 15;
+                    // 语义模式配置但ASR未就绪 → 自动降级，使用更低阈值 (200ms)
+                    if (cfg_.barge_in_semantic && !stream_asr_.initialized()) {
+                        energy_threshold = 10;
+                        static bool warned = false;
+                        if (!warned) {
+                            LOG_WARN("⚠️ 语义打断已启用但流式ASR未就绪，自动降级为能量打断");
+                            warned = true;
+                        }
+                    }
+                    if (barge_in_frames > energy_threshold) {
                         pid_t pid = player_pid_.exchange(-1);
                         if (pid > 0) {
                             AudioPlayer::stop_async(pid);
@@ -1455,12 +1489,32 @@ void VoicePipeline::process_loop()
         Segment seg;
         {
             std::unique_lock<std::mutex> lk(queue_mutex_);
-            queue_cv_.wait(lk, [this] {
+            // 用 wait_for 替代 wait，每秒唤醒检查空闲超时
+            queue_cv_.wait_for(lk, std::chrono::seconds(1), [this] {
                 return !segment_queue_.empty() || !interactive_running_;
             });
 
             if (!interactive_running_ && segment_queue_.empty()) {
                 break;  // 退出
+            }
+
+            // ── 空闲超时检查（ACTIVE 模式无语音段 → 休眠）──
+            if (segment_queue_.empty()) {
+                if (assistant_state_ == AssistantState::ACTIVE
+                    && !cfg_.sleep_message.empty()
+                    && cfg_.idle_sleep_seconds > 0) {
+                    auto now = std::chrono::steady_clock::now();
+                    auto idle_sec = std::chrono::duration_cast<std::chrono::seconds>(
+                        now - last_active_time_).count();
+                    if (idle_sec >= cfg_.idle_sleep_seconds) {
+                        lk.unlock();
+                        LOG_INFO("   😴 {}s 无交互，进入休眠", idle_sec);
+                        speak_and_play(cfg_.sleep_message);
+                        assistant_state_ = AssistantState::SLEEP;
+                        continue;  // 回到循环顶部，等待唤醒词
+                    }
+                }
+                continue;  // 无语音段，继续等待
             }
 
             seg = std::move(segment_queue_.front());
@@ -1509,11 +1563,26 @@ void VoicePipeline::process_loop()
             continue;
         }
 
-        // 3) 唤醒词检查（可选的）／声纹识别
-        if (kws_.enabled() && !kws_.detect(prompt)) {
-            LOG_INFO("   ⚠️ 未检测到唤醒词，跳过");
-            process_busy_ = false;
-            continue;
+        // 3) 唤醒词检查 / 休眠状态机
+        if (assistant_state_ == AssistantState::SLEEP) {
+            std::string detected = kws_.detect_any(prompt);
+            if (detected.empty()) {
+                // SLEEP 模式 + 未检测到唤醒词 → 忽略
+                process_busy_ = false;
+                continue;
+            }
+            // 唤醒！
+            LOG_INFO("   🌟 唤醒词 \"{}\" 检测成功，进入 ACTIVE 模式", detected);
+            assistant_state_ = AssistantState::ACTIVE;
+            last_active_time_ = std::chrono::steady_clock::now();
+            // 播放简短回应
+            if (!cfg_.wake_reply.empty()) {
+                speak_and_play(cfg_.wake_reply);
+            }
+            // 继续处理用户请求（唤醒词后面跟的话）
+        } else {
+            // ACTIVE 模式：刷新活跃时间，正常对话
+            last_active_time_ = std::chrono::steady_clock::now();
         }
 
         // 声纹识别（交互模式中可选，仅在声纹库有用户时启用）
@@ -1599,7 +1668,8 @@ void VoicePipeline::process_loop()
         }
 
         // 5.5) 质量优化：Multi-Agent 或 Reflection
-        if (multi_agent_) {
+        // 直接技能回复（如唱歌SSML）不经过质量模块，避免破坏格式
+        if (multi_agent_ && !sr.direct) {
             auto t_ma = std::chrono::steady_clock::now();
             std::string cmodel = cfg_.ma_critic_model.empty()
                 ? cfg_.llm_model : cfg_.ma_critic_model;
@@ -1610,7 +1680,7 @@ void VoicePipeline::process_loop()
             auto t_ma_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - t_ma).count();
             std::cout << "   [MultiAgent] " << t_ma_ms << "ms" << std::endl;
-        } else if (reflect_) {
+        } else if (reflect_ && !sr.direct) {
             auto t_ref = std::chrono::steady_clock::now();
             auto r = reflect_->reflect(prompt, reply);
             reply = r.improved;
@@ -1644,7 +1714,8 @@ void VoicePipeline::process_loop()
         save_all_memory();  // 持久化到磁盘
 
         // SSML 检测（唱歌等 skill 输出 SSML，跳过 emoji 过滤）
-        bool is_ssml = (reply.size() > 7 && reply.substr(0, 7) == "<speak>");
+        // 注意: SSML 可能是 <speak> 或 <speak version="1.0" ...>，检测前缀即可
+        bool is_ssml = (reply.size() >= 6 && reply.substr(0, 6) == "<speak");
         if (!is_ssml) reply = strip_emoji(reply);
         std::cout << "   🤖 回复: \"" << (is_ssml ? "[SSML歌曲]" : reply) << "\"" << std::endl;
 

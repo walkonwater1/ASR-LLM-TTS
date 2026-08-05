@@ -59,7 +59,6 @@ set(SOURCES
     brain/skills/skill_fortune.cpp
     brain/skills/skill_poetry.cpp
     brain/skills/skill_games.cpp
-    brain/skills/skill_sing.cpp
 
     llm/llm_engine.cpp
     llm/prompt_builder.cpp
@@ -111,7 +110,6 @@ set(HEADERS
     brain/skills/skill_fortune.h
     brain/skills/skill_poetry.h
     brain/skills/skill_games.h
-    brain/skills/skill_sing.h
 
     llm/llm_engine.h
     llm/prompt_builder.h
@@ -203,8 +201,7 @@ add_executable(test_skills test_skills.cpp
     brain/skills/skill_fortune.cpp
     brain/skills/skill_entertainment.cpp
     brain/skills/skill_riddle.cpp
-    brain/skills/skill_games.cpp
-    brain/skills/skill_sing.cpp)
+    brain/skills/skill_games.cpp)
 target_include_directories(test_skills PRIVATE
     ${CMAKE_SOURCE_DIR}/brain
     ${CMAKE_SOURCE_DIR}/brain/skills

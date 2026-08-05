@@ -28,11 +28,49 @@ VOICE = "zh-CN-XiaoxiaoNeural"
 async def synthesize(text, output_path, voice=VOICE):
     """Synthesize text to WAV using Edge-TTS."""
     import edge_tts
+    import edge_tts.communicate as comm
 
-    # Generate mp3 temp file
-    tmp_mp3 = output_path + ".mp3"
-    communicate = edge_tts.Communicate(text, voice)
-    await communicate.save(tmp_mp3)
+    is_ssml = text.strip().startswith("<speak")
+
+    # SSML 模式：必须在 Communicate() 构造之前 patch，
+    # 因为 __init__ 中会调用 escape(remove_incompatible_characters(text))
+    # 否则 <prosody> 会被转义成 &lt;prosody&gt;
+    if is_ssml:
+        import re
+        _orig_escape = comm.escape
+        _orig_remove = comm.remove_incompatible_characters
+        _orig_mkssml = comm.mkssml
+
+        # 禁用 XML 转义
+        comm.escape = lambda x, entities=None: x
+        comm.remove_incompatible_characters = lambda x: x
+
+        # 提取 <speak> 内部内容，注入 <voice name> 包装
+        match = re.search(r'<speak[^>]*>(.*)</speak>', text, re.DOTALL)
+        if match:
+            inner = match.group(1).strip()
+            text = (
+                "<speak version='1.0' "
+                "xmlns='http://www.w3.org/2001/10/synthesis' "
+                "xml:lang='zh-CN'>"
+                f"<voice name='{voice}'>"
+                f"{inner}"
+                "</voice>"
+                "</speak>"
+            )
+
+        # 透传已构建好的完整 SSML（不重包装）
+        comm.mkssml = lambda tc, txt: text
+
+    try:
+        tmp_mp3 = output_path + ".mp3"
+        communicate = edge_tts.Communicate(text, voice)
+        await communicate.save(tmp_mp3)
+    finally:
+        if is_ssml:
+            comm.escape = _orig_escape
+            comm.remove_incompatible_characters = _orig_remove
+            comm.mkssml = _orig_mkssml
 
     # Convert mp3 → WAV (16kHz mono)
     subprocess.run([

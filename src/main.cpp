@@ -1,20 +1,16 @@
 /**
- * 语音交互 Demo — 主函数
+ * 语音助手 — 主函数
  *
  * 用法:
  *   ./build/voice_pipeline
  *
- * 输入:
- *   文字     → 直接 LLM 对话（跳过唤醒词/声纹检查）
- *   r        → 录音 → ASR → KWS → SV → LLM → TTS（单次）
- *   listen   → 持续监听 + 语音打断交互模式
- *   enroll   → 声纹注册
- *   clear    → 清空对话记忆
- *   quit     → 退出
+ * 启动后直接进入持续语音监听模式：
+ *   - 默认 SLEEP 状态，等待唤醒词（"你好爱秋"/"你好小希"/"小希小希"）
+ *   - 唤醒后进入 ACTIVE 状态，正常对话
+ *   - 90 秒无交互自动休眠（"我去休息啦"）
+ *   - Ctrl+C 退出
  *
  * 编译: mkdir build && cd build && cmake .. && make
- *
- * Python 对应: scripts/full_pipeline.py + run_realtime.py
  */
 
 #include "voice_pipeline.h"
@@ -52,19 +48,6 @@ static void reload_handler(int /*sig*/)
         return;
     }
     g_pipeline->reload_config(new_cfg);
-}
-
-static void print_menu()
-{
-    std::cout << "============================================================" << std::endl;
-    std::cout << "  输入文字   → 直接 LLM 对话（跳过唤醒词/声纹检查）" << std::endl;
-    std::cout << "  输入 r      → 单次录音 → 唤醒词检查 → 声纹验证 → LLM" << std::endl;
-    std::cout << "  输入 listen → 🎤 交互模式（持续监听 + 语音打断）" << std::endl;
-    std::cout << "  输入 enroll → 注册声纹（说 3 秒以上）" << std::endl;
-    std::cout << "  输入 clear  → 清空对话记忆" << std::endl;
-    std::cout << "  输入 quit   → 退出" << std::endl;
-    std::cout << "============================================================" << std::endl;
-    std::cout << "🎉 就绪！" << std::endl << std::endl;
 }
 
 int main(int /*argc*/, char** /*argv*/)
@@ -112,50 +95,8 @@ int main(int /*argc*/, char** /*argv*/)
         watcher->start();
     }
 
-    print_menu();
-
-    // ── 主循环 ────────────────────────────────────────
-    std::string line;
-    while (true) {
-        std::cout << ">>> " << std::flush;
-        if (!std::getline(std::cin, line)) {
-            break;  // EOF / Ctrl+D
-        }
-
-        // 去首尾空格
-        auto start = line.find_first_not_of(" \t\r\n");
-        auto end   = line.find_last_not_of(" \t\r\n");
-        if (start == std::string::npos) continue;  // 空行
-        std::string cmd = line.substr(start, end - start + 1);
-
-        if (cmd == "quit") {
-            std::cout << "👋 再见！" << std::endl;
-            break;
-        }
-
-        if (cmd == "clear") {
-            pipeline.clear_memory();
-            continue;
-        }
-
-        if (cmd == "enroll") {
-            pipeline.enroll_speaker();
-            continue;
-        }
-
-        if (cmd == "listen") {
-            // 交互模式：持续监听 + 语音打断
-            pipeline.run_interactive();
-            print_menu();
-            continue;
-        }
-
-        if (cmd == "r") {
-            pipeline.process_voice();
-        } else {
-            pipeline.process_text(cmd);
-        }
-    }
+    // ── 直接进入语音交互模式 ──────────────────────────
+    pipeline.run_interactive();
 
     if (watcher) watcher->stop();
     g_pipeline = nullptr;

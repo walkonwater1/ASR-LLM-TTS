@@ -512,13 +512,7 @@ bool TTSEngine::synthesize(const std::string& text, const std::string& output_pa
     // SSML 模式：跳过所有文本预处理和韵律分析，直接合成
     if (is_ssml) {
         if (backend_ == "edge_tts") {
-            auto t_start = std::chrono::steady_clock::now();
-            bool ok = synthesize_edge_tts(text, output_path, true);
-            auto t_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - t_start).count();
-            std::cout << "   [TTS] edge_tts(SSML) " << t_ms << "ms"
-                      << (ok ? "" : " ❌") << std::endl;
-            return ok;
+            return synthesize_edge_tts(text, output_path, true);
         }
         // piper/espeak 不支持 SSML，降级为普通合成
         LOG_WARN("[TTS] {} 后端不支持SSML，降级为普通合成", backend_);
@@ -574,23 +568,13 @@ bool TTSEngine::synthesize(const std::string& text, const std::string& output_pa
         }
     }
 
-    auto t_tts_start = std::chrono::steady_clock::now();
-
-    bool ok = false;
     if (backend_ == "piper") {
-        ok = synthesize_piper(synth_text, output_path);
+        return synthesize_piper(synth_text, output_path);
     } else if (backend_ == "edge_tts") {
-        ok = synthesize_edge_tts(synth_text, output_path);
+        return synthesize_edge_tts(synth_text, output_path);
     } else {
-        ok = synthesize_espeak(synth_text, output_path);
+        return synthesize_espeak(synth_text, output_path);
     }
-
-    auto t_tts_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - t_tts_start).count();
-    std::cout << "   [TTS] " << backend_ << " " << t_tts_ms << "ms"
-              << (ok ? "" : " ❌") << std::endl;
-
-    return ok;
 }
 
 // ── espeak 后端 ─────────────────────────────────────
@@ -883,18 +867,13 @@ bool TTSEngine::synthesize_edge_tts(const std::string& text, const std::string& 
     // 注意: 不依赖 pclose() 返回值，因为 voice_pipeline 可能有 SIGCHLD 干扰
     // 直接检查输出文件是否生成成功即可
     std::ostringstream cmd;
-    cmd << "python3 " << edge_tts_script_;
-    if (is_ssml) {
-        cmd << " --ssml " << std::quoted(content);
-    } else {
-        cmd << " --text " << std::quoted(content);
-    }
-    cmd << " --voice " << edge_tts_voice_
-        << " --output " << output_path
-        << " 2>/dev/null";
+    cmd << "python3 " << edge_tts_script_
+        << " --text " << std::quoted(content)
+        << " --voice " << edge_tts_voice_
+        << " --output " << output_path;
 
     int ret = system(cmd.str().c_str());
-    // ret=-1 可能只是 SIGCHLD 干扰，不一定是真正的失败
+    (void)ret;  // ret=-1 可能只是 SIGCHLD 干扰，不一定是真正的失败
     // 关键: 检查输出文件是否生成
 
     // 验证输出文件

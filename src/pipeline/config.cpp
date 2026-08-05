@@ -83,6 +83,15 @@ bool PipelineConfig::load_from_file(const std::string& path)
     if (j.contains("wake_word")) {
         try_get(j["wake_word"], "keyword", wake_word);
     }
+    if (j.contains("wake_words") && j["wake_words"].is_array()) {
+        wake_words.clear();
+        for (auto& w : j["wake_words"]) {
+            if (w.is_string()) wake_words.push_back(w.get<std::string>());
+        }
+    }
+    try_get(j, "wake_reply",          wake_reply);
+    try_get(j, "idle_sleep_seconds",  idle_sleep_seconds);
+    try_get(j, "sleep_message",       sleep_message);
 
     // ── 声纹验证 ───────────────────────────────────
     if (j.contains("speaker_verification")) {

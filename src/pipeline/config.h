@@ -32,7 +32,13 @@ struct PipelineConfig {
     std::string edge_tts_voice   = "zh-CN-XiaoyiNeural";         // Edge TTS 音色
 
     // ── 唤醒词 ─────────────────────────────────────
-    std::string wake_word = "zhan qi lai";   // 空字符串 = 关闭
+    std::string wake_word = "zhan qi lai";   // 空字符串 = 关闭（单选模式，兼容旧配置）
+    std::vector<std::string> wake_words = {  // 多唤醒词（中文原文）
+        "你好爱秋", "你好小希", "小希小希"
+    };
+    std::string wake_reply     = "我在";       // 唤醒后简短回应
+    int    idle_sleep_seconds  = 90;          // 无交互自动休眠秒数
+    std::string sleep_message  = "我去休息啦";  // 休眠提示语
 
     // ── 声纹验证 ───────────────────────────────────
     std::string sv_enroll_dir = "speaker_voice";
@@ -53,7 +59,7 @@ struct PipelineConfig {
 
     // ── 交互模式 ───────────────────────────────────
     bool  barge_in_enabled      = true;    // 播放时允许语音打断
-    float barge_in_energy_ratio = 2.0f;    // 能量门控：当前帧/回声基线 > 此值 → 启动ASR语义检测
+    float barge_in_energy_ratio = 1.5f;    // 能量门控：当前帧/回声基线 > 此值 → 启动打断（1.5=较灵敏）
     int   max_response_chars    = 80;      // 回复最大字数（超出截断），0=不限制
     bool  barge_in_semantic     = true;    // 语义打断：ASR识别到打断意图短语才打断（false=纯能量打断）
     std::vector<std::string> barge_in_phrases = {
