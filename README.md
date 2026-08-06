@@ -1,6 +1,8 @@
 # 🎙️ 小希 — 全链路本地语音 AI 助手
 
-**13,000+ 行 C++17，76 个单元测试，从麦克风采集到语音合成，完整的本地语音交互系统。**
+**33,000+ 行 C++17 | Sherpa-ONNX + Ollama + edge_tts | MIT License**
+
+从麦克风采集到语音合成，完整的本地语音交互系统。
 
 ## 系统架构
 
@@ -63,12 +65,13 @@
 | **Reflection** | 自我反思 | 可选（默认关闭），LLM审视修正回复 |
 | **Multi-Agent** | Generator+Critic | 可选（默认关闭），双模型协作 |
 
-### 🔧 14个技能
-```
-实用类:  时间 · 天气 · 计算器 · 网页搜索 · RAG知识库
-生产类:  提醒(后台fork进程) · 笔记(JSON CRUD) · 系统状态(CPU/内存/磁盘)
-娱乐类:  笑话 · 故事 · 冷知识 · 毒鸡汤 · 唐诗宋词 · 谜语 · 占卜(星座/塔罗/黄历) · 猜数字/成语接龙
-```
+### 🔧 14 个技能
+| 分类 | 技能 | 说明 |
+|------|------|------|
+| **实用类** | 时间 · 天气 · 计算器 · 网页搜索 · RAG知识库 | 信息查询与知识检索 |
+| **生产类** | 提醒(后台fork进程) · 笔记(JSON CRUD) · 系统状态(CPU/内存/磁盘) | 任务管理与系统监控 |
+| **记忆类** | 用户记忆(偏好/事实存储) | 跨会话持久化，按用户隔离 |
+| **娱乐类** | 笑话 · 故事 · 冷知识 · 毒鸡汤 · 诗词 · 谜语 · 占卜(星座/塔罗/黄历) · 猜数字/成语接龙 | 内容型技能 direct 模式交付 |
 
 **关键字匹配调度**：使用确定性关键字路由技能，避免小模型 Function Calling 输出不稳定。内容型技能(诗词/笑话/故事)使用 `direct` 模式直接交付，绕过LLM避免小模型截断。
 
@@ -98,14 +101,17 @@ TTS (edge_tts/Piper):                 ~480 ms/短句
 
 ## 测试覆盖
 
-| 测试套件 | 用例数 | 覆盖 |
+| 测试套件 | 断言数 | 覆盖 |
 |----------|--------|------|
-| test_utf8 | 33 | 垃圾文本检测(中/日/韩/英/标点/空白) |
-| test_vad | 7 | VAD状态机(静音/语音开始/结束/自适应/冷却) |
-| test_skills | 36 | 技能匹配+执行(时间/计算/诗词/娱乐/占卜/谜语/游戏) |
+| test_utf8 | ~40 | 垃圾文本检测(中/日/韩/英/标点/空白) |
+| test_vad | ~25 | VAD状态机(静音/语音开始/结束/自适应/冷却) |
+| test_skills | ~77 | 14个技能匹配+执行(时间/计算/诗词/娱乐/占卜/谜语/游戏/记忆/提醒/笔记) |
+| test_streaming_asr | — | 流式ASR增量识别 |
+| test_voice_emotion | — | 情感分析(音高/语速/能量) |
 
 ```bash
 ./build/test_utf8 && ./build/test_vad && ./build/test_skills
+./build/test_streaming_asr && ./build/test_voice_emotion
 ./build/benchmark test_recording.wav  # 性能基准
 ```
 
@@ -160,13 +166,16 @@ cd ../..
 ```
 src/
 ├── pipeline/     # 管线编排 (VoicePipeline)
-├── speech/       # ASR · 流式ASR · TTS · 声纹 · 唤醒词 · 情感
-├── brain/        # 技能系统 (SkillManager + 14个技能)
-├── llm/          # LLM引擎 · FunctionCalling · ReAct · Reflection · MultiAgent
-├── memory/       # 对话记忆 · 用户长期记忆 · 文档分块
-├── audio/        # 音频IO · VAD · 降噪
-├── server/       # WebSocket 语音服务
-└── utils/        # UTF8工具 · 配置热重载 · 日志
+├── speech/       # ASR · 流式ASR · TTS · 声纹(CAM++) · 唤醒词 · 情感分析
+├── brain/        # 技能系统 (SkillManager + 14个技能: time/weather/calculator/
+│                 #   entertainment/fortune/games/memory/notes/poetry/rag/
+│                 #   reminder/riddle/search/system)
+├── llm/          # LLM引擎 · FunctionCalling · ReAct · Reflection · MultiAgent · Embedding
+├── memory/       # 对话记忆 · 用户长期记忆 · 文档分块 · Token计数 · 向量存储
+├── audio/        # 音频IO · VAD(自适应+双端点) · 降噪
+├── server/       # WebSocket 语音服务 (RFC 6455)
+├── scripts/      # 辅助脚本
+└── utils/        # UTF8工具 · 配置热重载 · 日志 · HTTP客户端 · WAV工具
 ```
 
 ## 配置
@@ -180,12 +189,26 @@ src/
     "model_type": "zipformer_ctc"
   },
   "llm": { "host": "http://localhost:11434", "model": "qwen2.5:3b" },
-  "tts": { "backend": "edge_tts", "rate": 200 },
-  "vad": { "backend": "adaptive", "adaptive_factor": 7.0, "min_energy": 0.025 }
+  "tts": { "backend": "edge_tts", "rate": 200, "voice": "cmn+f3",
+           "edge_tts_voice": "zh-CN-XiaoyiNeural" },
+  "vad": { "backend": "adaptive", "adaptive_factor": 7.0, "min_energy": 0.025 },
+  "interactive": {
+    "barge_in_enabled": true,
+    "barge_in_phrases": ["别说了", "不想听", "停下", "闭嘴", "够了"]
+  },
+  "memory": { "enabled": true, "max_rounds": 10, "persist_dir": "/tmp/voice-pipeline/memory" },
+  "speaker_verification": { "enroll_dir": "speaker_voice", "threshold": 0.35 }
 }
 ```
 
-> **实验性功能**：`function_calling`、`react`、`reflection`、`multi_agent` 默认关闭，详见 `config.json` 中的开关。
+| 模块 | 关键字段 | 说明 |
+|------|---------|------|
+| `interactive` | `barge_in_enabled` | 语音打断开关（检测到打断短语时中断播放） |
+| | `barge_in_phrases` | 打断触发短语列表，支持语义打断 |
+| `memory` | `max_rounds` | 对话记忆保留轮数 |
+| | `persist_dir` | 对话历史 + 用户记忆持久化目录 |
+| `speaker_verification` | `threshold` | 声纹识别阈值 (CAM++ cosine 距离) |
+| `tts` | `edge_tts_voice` | Azure TTS 语音角色（默认 XiaoyiNeural） |
 
 ### 多机部署
 
@@ -266,6 +289,16 @@ LLM 可与 ASR/TTS 分离部署：
 | 隐私保护 | ✅ | ❌ | ✅ (90%+) |
 | 云端成本 | 零 | 高 | 低 |
 | 部署复杂度 | 低 | 低 | 中 |
+
+## 项目关联
+
+本仓库是 [eir/lixin](.) workspace 的一部分，与其他项目协作：
+
+| 项目 | 关系 |
+|------|------|
+| [RTSP-MTX-SERVER](../RTSP-MTX-SERVER/) | 使用本项目的 ASR/LLM/TTS/Skills 管线，提供 RTSP+WebSocket 语音交互服务 |
+| [MIDDLEWARE](../MIDDLEWARE/) | 为本项目提供 MQTT/ZMQ/gRPC 等通信中间件知识参考 |
+| [HARNESS](../HARNESS/) | AI-Native 自动化测试框架，可用于本项目的回归测试 |
 
 ## License
 
