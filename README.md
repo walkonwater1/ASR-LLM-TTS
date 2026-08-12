@@ -239,6 +239,9 @@ LLM 可与 ASR/TTS 分离部署：
 4. **为什么 VAD + ASR稳定性双重端点检测？**
    纯VAD在持续噪声中无法检测静音。ASR文本稳定性检测作为互补——文本1.5s不变即判定说完，1.0s if 以。！？结尾。
 
+5. **为什么不用 VoxCPM 做 TTS？**
+   [VoxCPM](https://github.com/OpenBMB/VoxCPM) 是 OpenBMB 推出的端到端语音合成模型（0.5B/2B 参数），支持零样本语音克隆、情感控制和多语言合成，RTF 0.17（RTX 4090）。但它**必须依赖 GPU**（最少 5-8 GB 显存）。本项目目标平台是 Intel NUC（纯 CPU）和 Jetson Orin NX（边缘设备），不具备运行 VoxCPM 的GPU条件。当前选型 edge_tts（云端，~480ms）和 Piper（本地 CPU，ONNX Runtime）均不需要 GPU，更适合边缘部署场景。
+
 ## 技术栈
 
 | 组件 | 技术 | 说明 |
