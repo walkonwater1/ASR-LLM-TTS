@@ -285,6 +285,15 @@ download_file() {
     for u in "${urls[@]}"; do
         local part="${output}.part"
         rm -f "$part"
+
+        # 服务端声明的大小: 用 1 字节 range GET 读取（HEAD 在 GitHub CDN 上不可靠）。
+        # 大文件在慢链路上可能被截断，若不比对则"安装成功"但运行时才炸。
+        local expect=""
+        if command -v curl &>/dev/null; then
+            expect="$(curl -sL -r 0-0 --connect-timeout 10 --max-time 30 -D - -o /dev/null "$u" 2>/dev/null \
+                      | tr -d '\r' | awk 'tolower($1)=="content-range:"{split($2,a,"/"); print a[2]; exit}')"
+        fi
+
         # --tries/--retry: GitHub 等链路会瞬时抖动（实测有连接超时后重试即成功），
         # 单纯 --tries=1 会让偶发失败直接终止安装；timeout 保证失败有界
         if command -v wget &>/dev/null; then
@@ -298,6 +307,12 @@ download_file() {
         fi
 
         if [ -s "$part" ]; then
+            if [ -n "$expect" ] && [ "$expect" -gt 0 ] 2>/dev/null && \
+               [ "$(stat -c%s "$part")" != "$expect" ]; then
+                warn "下载不完整 ($(stat -c%s "$part")/${expect} 字节)，重试: ${u}"
+                rm -f "$part"
+                continue
+            fi
             mv "$part" "$output"
             break
         fi
@@ -335,12 +350,13 @@ install_sherpa_onnx() {
 
     info "下载 sherpa-onnx v${SHERPA_VERSION} (${SHERPA_ASSET}) ..."
 
-    # 先确认 asset 存在，避免把 404 页面当压缩包存下来（timeout: 链路抖动时不空转）
+    # 预检仅告警，不作为中止条件:
+    # GitHub release 会 302 重定向到 release-assets.githubusercontent.com，
+    # 该 CDN 的 HEAD 请求常超时，但真实 GET 正常 —— 用 HEAD 卡安装是误判。
+    # 表配错（asset 名不存在）改由下载后的归档校验来兜底。
     if command -v curl &>/dev/null && \
        ! curl -sfIL --connect-timeout 10 --max-time 25 "$SHERPA_URL" >/dev/null 2>&1; then
-        err "资源不存在或网络不可达: ${SHERPA_URL}"
-        err "请确认 ${TARGET_ARCH} 对应的构建变体（表在 setup.sh 顶部 SHERPA_VARIANT）"
-        return 1
+        warn "预检未能确认 asset 存在（可能是 CDN HEAD 超时），继续尝试实际下载"
     fi
 
     local tmp_dir="/tmp/sherpa-onnx-$$"
@@ -351,10 +367,18 @@ install_sherpa_onnx() {
     # 下载（复用 download_file: 带超时与重试，避免链路抖动直接失败）
     download_file "$SHERPA_URL" "$tar_path" "sherpa-onnx 运行时" || true
 
-    if [ ! -f "$tar_path" ] || [ ! -s "$tar_path" ]; then
+    if [ ! -s "$tar_path" ]; then
         err "下载 sherpa-onnx 失败"
         err "请手动下载: ${SHERPA_URL}"
         err "解压到: ${SHERPA_DIR}"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    # 归档校验: 404 页面 / 半截文件在这里被挡住，而不是等到解压报错
+    if ! tar -tjf "$tar_path" >/dev/null 2>&1; then
+        err "下载到的不是有效 bzip2 归档（多半是 asset 名错误或链路损坏）: ${SHERPA_URL}"
+        err "请确认 ${TARGET_ARCH} 对应的构建变体（表在 setup.sh 顶部 SHERPA_VARIANT）"
         rm -rf "$tmp_dir"
         return 1
     fi
@@ -416,11 +440,10 @@ install_onnxruntime_headers() {
 
     info "下载 onnxruntime ${ORT_VERSION} 头文件 (${PKG_ARCH}) ..."
 
+    # 预检仅告警（同 sherpa: GitHub CDN 的 HEAD 常超时，GET 正常）
     if command -v curl &>/dev/null && \
        ! curl -sfIL --connect-timeout 10 --max-time 25 "$ORT_URL" >/dev/null 2>&1; then
-        err "资源不存在或网络不可达: ${ORT_URL}"
-        err "请确认 ORT_VERSION（当前 ${ORT_VERSION}）是否与 sherpa 内置 libonnxruntime.so 匹配"
-        return 1
+        warn "预检未能确认 asset 存在（可能是 CDN HEAD 超时），继续尝试实际下载"
     fi
 
     local tmp_dir="/tmp/onnxruntime-$$"
@@ -433,6 +456,14 @@ install_onnxruntime_headers() {
         err "下载 onnxruntime 失败"
         err "请手动下载: ${ORT_URL}"
         err "把 include/ 解压到: ${ORT_DIR}/include"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    # 归档校验（挡 404 页面 / 半截文件）
+    if ! tar -tzf "${tmp_dir}/${ORT_TAR}" >/dev/null 2>&1; then
+        err "下载到的不是有效 gzip 归档（多半是 asset 名错误或链路损坏）: ${ORT_URL}"
+        err "请确认 ORT_VERSION（当前 ${ORT_VERSION}）是否与 sherpa 内置 libonnxruntime.so 匹配"
         rm -rf "$tmp_dir"
         return 1
     fi
