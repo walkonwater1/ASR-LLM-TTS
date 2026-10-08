@@ -96,6 +96,10 @@ compute_arch_assets() {
     SHERPA_TAR="${SHERPA_ASSET}.tar.bz2"
     SHERPA_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_VERSION}/${SHERPA_TAR}"
 
+    # C API 头文件: aarch64 的 release 包不含 include/，按 tag 从源码补（与架构无关）
+    SHERPA_HEADER_BASE="https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v${SHERPA_VERSION}/sherpa-onnx/c-api"
+    SHERPA_HEADERS=(c-api.h cxx-api.h)
+
     # onnxruntime 头文件（仅头文件；.so 复用 sherpa 包内的那份）
     # src/llm/onnx_embedding.cpp 无条件 include <onnxruntime_c_api.h>，
     # 但 sherpa 包只带 lib/libonnxruntime.so，因此头文件必须单独准备。
@@ -357,6 +361,26 @@ download_file() {
 
 # ── 步骤3: 下载 sherpa-onnx 运行时库 ─────────────────────
 
+# 补 C API 头文件（aarch64 包不含 include/；内容与 x64 包内的逐字节一致）
+install_sherpa_headers() {
+    local dest="${SHERPA_DIR}/include/sherpa-onnx/c-api"
+    mkdir -p "$dest"
+
+    local h
+    for h in "${SHERPA_HEADERS[@]}"; do
+        download_file "${SHERPA_HEADER_BASE}/${h}" "${dest}/${h}" "sherpa 头文件: ${h}" || return 1
+    done
+
+    # CMake 靠 c-api.h 判定 SHERPA_ONNX_AVAILABLE，缺了会静默降级成"无 sherpa 构建"
+    if [ ! -s "${dest}/c-api.h" ]; then
+        err "C API 头文件缺失: ${dest}/c-api.h"
+        err "缺少它 CMake 会判定 sherpa 不可用，编译出的 ASR/声纹是降级版本"
+        return 1
+    fi
+    log "sherpa C API 头文件已就位 (${dest})"
+    return 0
+}
+
 install_sherpa_onnx() {
     log "检查 sherpa-onnx 运行时库 (${TARGET_ARCH})..."
 
@@ -428,7 +452,16 @@ install_sherpa_onnx() {
     mkdir -p "${SHERPA_DIR}/lib"
     mkdir -p "${SHERPA_DIR}/include"
     cp -r "${extracted_dir}/lib/"* "${SHERPA_DIR}/lib/"
-    cp -r "${extracted_dir}/include/"* "${SHERPA_DIR}/include/"
+
+    # 上游打包差异: x64 的 -shared 包带 include/，aarch64 的 -shared-cpu 包
+    # 只有 bin/ 与 lib/（没有任何 include/），所以头文件要在缺的时候单独补。
+    # 两个头文件与架构无关，按 tag 从源码取，内容与 x64 包内的逐字节一致。
+    if [ -d "${extracted_dir}/include" ]; then
+        cp -r "${extracted_dir}/include/"* "${SHERPA_DIR}/include/"
+    else
+        warn "${SHERPA_ASSET} 不含 include/，单独获取 C API 头文件"
+        install_sherpa_headers || { rm -rf "$tmp_dir"; return 1; }
+    fi
 
     # 清理
     rm -rf "$tmp_dir"
@@ -527,6 +560,12 @@ fetch_assets() {
     local rc=0
     download_file "$SHERPA_URL" "${dir}/${SHERPA_TAR}" "sherpa-onnx 运行时 (${TARGET_ARCH})" || rc=1
     download_file "$ORT_URL"    "${dir}/${ORT_TAR}"    "onnxruntime 头文件 (${TARGET_ARCH})" || rc=1
+
+    # 头文件用 basename 平铺存放，download_file 据此在离线目录里命中
+    local h
+    for h in "${SHERPA_HEADERS[@]}"; do
+        download_file "${SHERPA_HEADER_BASE}/${h}" "${dir}/${h}" "sherpa 头文件: ${h}" || rc=1
+    done
 
     local f
     for f in "${ASR_MODEL_FILES[@]}"; do
