@@ -221,6 +221,13 @@ install_deps() {
         pkgs+=("libspdlog-dev")
     fi
 
+    # websocketpp（ws_voice_server 目标无条件 include 它，缺了整个 make 会失败；
+    # CMakeLists 里写的是 QUIET"可选"，但目标本身并没有被 guard）
+    if [ ! -f /usr/include/websocketpp/config/asio_no_tls.hpp ]; then
+        missing+=("libwebsocketpp-dev")
+        pkgs+=("libwebsocketpp-dev")
+    fi
+
     # ALSA 工具（amixer 调录音增益，交互终端需要）
     command -v amixer >/dev/null 2>&1 || { missing+=("alsa-utils"); pkgs+=("alsa-utils"); }
 
