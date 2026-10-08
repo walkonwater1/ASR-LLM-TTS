@@ -38,6 +38,15 @@ SHERPA_DIR="${THIRD_PARTY_DIR}/sherpa-onnx"
 BUILD_DIR="${SRC_DIR}/build"
 VENV_DIR="${SCRIPT_DIR}/.venv"
 
+# ── 离线资产包（跨架构安装用）─────────────────────────────
+# 场景: 目标机（如 ARM 板子）连不上 GitHub / HuggingFace。
+# 步骤: 联网机器上 ./setup.sh --fetch-assets <dir> --arch aarch64
+#       → 把 <dir> 拷到目标机
+#       → 目标机 ./setup.sh --profile client --offline-dir <dir>
+OFFLINE_DIR=""     # --offline-dir: 从这里取资产，不再走网络
+FETCH_DIR=""       # --fetch-assets: 抓取目标架构资产到此目录
+ARCH_OVERRIDE=""   # --arch: 覆盖本机架构（主要配合 --fetch-assets）
+
 # ── 颜色 ──────────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -69,30 +78,35 @@ if [ -z "$MULTIARCH" ] && command -v gcc >/dev/null 2>&1; then
 fi
 [ -n "$MULTIARCH" ] || MULTIARCH="${TARGET_ARCH}-linux-gnu"
 
-# ── 各上游 release 的架构标识（x64 / aarch64）─────────────
-case "$TARGET_ARCH" in
-    x86_64)  PKG_ARCH="x64";     SHERPA_VARIANT="shared"     ;;
-    aarch64) PKG_ARCH="aarch64"; SHERPA_VARIANT="shared-cpu" ;;
-esac
+# ── 各上游 release 的架构标识与 asset URL ─────────────────
+# 抽成函数是为了支持 --arch: 在大网络机器上抓取"另一种架构"的资产包，
+# 再拷到目标机上离线安装（见 --fetch-assets / --offline-dir）
+compute_arch_assets() {
+    case "$TARGET_ARCH" in
+        x86_64)  PKG_ARCH="x64";     SHERPA_VARIANT="shared"     ;;
+        aarch64) PKG_ARCH="aarch64"; SHERPA_VARIANT="shared-cpu" ;;
+    esac
 
-# ── sherpa-onnx 运行时（asset 名带 v 前缀 + 构建变体后缀）───
-# 取值已实测存在（HTTP 206）:
-#   x64     → sherpa-onnx-v1.13.2-linux-x64-shared.tar.bz2
-#   aarch64 → sherpa-onnx-v1.13.2-linux-aarch64-shared-cpu.tar.bz2
-SHERPA_VERSION="1.13.2"
-SHERPA_ASSET="sherpa-onnx-v${SHERPA_VERSION}-linux-${PKG_ARCH}-${SHERPA_VARIANT}"
-SHERPA_TAR="${SHERPA_ASSET}.tar.bz2"
-SHERPA_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_VERSION}/${SHERPA_TAR}"
+    # sherpa-onnx 运行时（asset 名带 v 前缀 + 构建变体后缀）
+    # 取值已实测存在（HTTP 206）:
+    #   x64     → sherpa-onnx-v1.13.2-linux-x64-shared.tar.bz2
+    #   aarch64 → sherpa-onnx-v1.13.2-linux-aarch64-shared-cpu.tar.bz2
+    SHERPA_VERSION="1.13.2"
+    SHERPA_ASSET="sherpa-onnx-v${SHERPA_VERSION}-linux-${PKG_ARCH}-${SHERPA_VARIANT}"
+    SHERPA_TAR="${SHERPA_ASSET}.tar.bz2"
+    SHERPA_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_VERSION}/${SHERPA_TAR}"
 
-# ── onnxruntime 头文件（仅头文件；.so 复用 sherpa 包内的那份）──
-# src/llm/onnx_embedding.cpp 无条件 include <onnxruntime_c_api.h>，
-# 但 sherpa 包只带 lib/libonnxruntime.so，因此头文件必须单独准备。
-# ORT_VERSION 必须与 sherpa 内置的 libonnxruntime.so 版本一致（C API ABI）。
-ORT_VERSION="1.24.4"
-ORT_ASSET="onnxruntime-linux-${PKG_ARCH}-${ORT_VERSION}"
-ORT_TAR="${ORT_ASSET}.tgz"
-ORT_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_TAR}"
-ORT_DIR="${THIRD_PARTY_DIR}/onnxruntime"
+    # onnxruntime 头文件（仅头文件；.so 复用 sherpa 包内的那份）
+    # src/llm/onnx_embedding.cpp 无条件 include <onnxruntime_c_api.h>，
+    # 但 sherpa 包只带 lib/libonnxruntime.so，因此头文件必须单独准备。
+    # ORT_VERSION 必须与 sherpa 内置的 libonnxruntime.so 版本一致（C API ABI）。
+    ORT_VERSION="1.24.4"
+    ORT_ASSET="onnxruntime-linux-${PKG_ARCH}-${ORT_VERSION}"
+    ORT_TAR="${ORT_ASSET}.tgz"
+    ORT_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_TAR}"
+    ORT_DIR="${THIRD_PARTY_DIR}/onnxruntime"
+}
+compute_arch_assets
 
 # ── 模型下载地址（HF Mirror 国内更快）─────────────────────
 HF_BASE="https://huggingface.co"
@@ -266,6 +280,19 @@ download_file() {
     if [ "$DRY_RUN" = "1" ]; then
         info "[dry-run] 下载: ${desc} ← ${url}"
         return 0
+    fi
+
+    # 离线资产包优先: 目标机可能连不上 GitHub/HF（本项目的 ARM 板子就是），
+    # 资产包在联网机器上用 --fetch-assets 生成，按 basename 命名
+    if [ -n "$OFFLINE_DIR" ]; then
+        local cached="${OFFLINE_DIR}/$(basename "$url")"
+        if [ -f "$cached" ]; then
+            mkdir -p "$(dirname "$output")"
+            cp -f "$cached" "$output"
+            log "离线资产: ${desc} ← ${cached}"
+            return 0
+        fi
+        warn "离线资产包中缺少 $(basename "$url")，回退到网络下载"
     fi
 
     # 组装候选源（仅 HF 域名参与镜像替换）
@@ -485,6 +512,48 @@ install_onnxruntime_headers() {
 
     rm -rf "$tmp_dir"
     log "onnxruntime 头文件安装完成"
+}
+
+# ── 步骤3c: 抓取离线资产包（联网机器上执行）──────────────
+# 抓全部平台相关产物，供另一台机器 --offline-dir 使用。
+# 资产按 basename 命名，download_file 据此在离线目录里查找。
+fetch_assets() {
+    local dir="$1"
+    mkdir -p "$dir"
+
+    log "抓取 ${TARGET_ARCH} 资产包 → ${dir}"
+    info "（平台相关: sherpa 运行时、onnxruntime 头文件；平台无关: ASR / 声纹模型）"
+
+    local rc=0
+    download_file "$SHERPA_URL" "${dir}/${SHERPA_TAR}" "sherpa-onnx 运行时 (${TARGET_ARCH})" || rc=1
+    download_file "$ORT_URL"    "${dir}/${ORT_TAR}"    "onnxruntime 头文件 (${TARGET_ARCH})" || rc=1
+
+    local f
+    for f in "${ASR_MODEL_FILES[@]}"; do
+        download_file "${HF_BASE}/${ASR_MODEL_REPO}/resolve/main/${f}" \
+                      "${dir}/${f}" "ASR: ${f}" || rc=1
+    done
+    local i
+    for i in "${!SV_MODEL_FILES[@]}"; do
+        download_file "${SV_MODEL_URLS[$i]}" "${dir}/${SV_MODEL_FILES[$i]}" \
+                      "SV: ${SV_MODEL_FILES[$i]}" || rc=1
+    done
+
+    [ "$rc" = "0" ] || { err "部分资产抓取失败，不要把这批资产拷过去"; return 1; }
+
+    # 归档自检: 在本机就发现损坏，好过在目标机上解压时才炸
+    if ! tar -tjf "${dir}/${SHERPA_TAR}" >/dev/null 2>&1; then
+        err "sherpa 归档无效: ${dir}/${SHERPA_TAR}"; return 1
+    fi
+    if ! tar -tzf "${dir}/${ORT_TAR}" >/dev/null 2>&1; then
+        err "onnxruntime 归档无效: ${dir}/${ORT_TAR}"; return 1
+    fi
+
+    log "资产包已就绪: ${dir}  (共 $(du -sh "$dir" | cut -f1))"
+    echo ""
+    info "拷到目标机后在那边执行:"
+    info "  ./setup.sh --profile client --offline-dir ${dir}"
+    return 0
 }
 
 # ── 步骤4: 下载模型（sherpa 组件） ──────────────────────
@@ -868,6 +937,18 @@ print_help() {
     echo "  --clean            清理编译产物"
     echo "  --help             显示此帮助"
     echo ""
+    echo "跨架构 / 离线安装:"
+    echo "  --arch <a>         覆盖本机架构: x86_64 | aarch64（配合 --fetch-assets）"
+    echo "  --fetch-assets <d> 抓取目标架构的运行库与模型到目录 <d>（联网机器上执行）"
+    echo "  --offline-dir <d>  从目录 <d> 取资产，不再访问 GitHub / HuggingFace"
+    echo ""
+    echo "  例（目标机连不上 GitHub 时）:"
+    echo "    # 联网机器（架构可不同）"
+    echo "    ./setup.sh --fetch-assets ~/arm-assets --arch aarch64"
+    echo "    scp -r ~/arm-assets root@<目标机>:~/"
+    echo "    # 目标机"
+    echo "    ./setup.sh --profile client --offline-dir ~/arm-assets"
+    echo ""
     echo "组件:"
     echo "  core               构建工具链 + espeak-ng + ALSA + .venv（总是安装）"
     echo "  sherpa             sherpa-onnx 运行时 + ASR + 声纹模型（按架构自动选择）"
@@ -912,11 +993,31 @@ main() {
             --models)       mode="models"; shift ;;
             --build)        mode="build"; shift ;;
             --run)          mode="run"; shift ;;
+            --arch)         ARCH_OVERRIDE="${2:?--arch 需要参数}"; shift 2 ;;
+            --arch=*)       ARCH_OVERRIDE="${1#*=}"; shift ;;
+            --offline-dir)  OFFLINE_DIR="${2:?--offline-dir 需要参数}"; shift 2 ;;
+            --offline-dir=*) OFFLINE_DIR="${1#*=}"; shift ;;
+            --fetch-assets) FETCH_DIR="${2:?--fetch-assets 需要参数}"; mode="fetch"; shift 2 ;;
+            --fetch-assets=*) FETCH_DIR="${1#*=}"; mode="fetch"; shift ;;
             *) err "未知参数: $1"; print_help; exit 1 ;;
         esac
     done
 
+    # --arch 覆盖本机架构（用于在 x86 上抓 aarch64 的资产）
+    if [ -n "$ARCH_OVERRIDE" ]; then
+        case "$ARCH_OVERRIDE" in
+            x86_64|aarch64) ;;
+            *) err "--arch 取值无效: ${ARCH_OVERRIDE}（可用: x86_64 / aarch64）"; exit 1 ;;
+        esac
+        TARGET_ARCH="$ARCH_OVERRIDE"
+        compute_arch_assets
+    fi
+
     case "$mode" in
+        fetch)
+            fetch_assets "$FETCH_DIR"
+            exit $?
+            ;;
         build)
             build
             exit 0
