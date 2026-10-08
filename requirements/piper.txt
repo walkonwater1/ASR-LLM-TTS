@@ -1,0 +1,8 @@
+# piper 组件 — 本地神经网络 TTS (src/scripts/piper_server.py)
+#
+# pypinyin 用于 PIPER_PHONEME_MODE=fast（拼音音素，快、无需额外模型）。
+# 注意: PIPER_PHONEME_MODE=accurate 走 g2pw BERT 多音字消歧，
+#       需要额外的 g2pw 包与模型（aarch64 上不一定有 wheel）。
+#       若 g2pw 装不上，运行时用 PIPER_PHONEME_MODE=fast 即可。
+piper-tts
+pypinyin

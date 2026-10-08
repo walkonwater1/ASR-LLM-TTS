@@ -70,6 +70,9 @@ out_answer/
 # Third-party downloaded binaries (sherpa-onnx)
 src/third_party/
 
+# Python 运行时（setup.sh 创建）
+.venv/
+
 # Voiceprint library (runtime data — contains biometric voice data)
 speaker_voice/
 speaker_voice_library/

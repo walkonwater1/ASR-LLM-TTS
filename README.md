@@ -128,10 +128,48 @@ curl -fsSL https://ollama.com/install.sh | sh
 ollama pull qwen2.5:3b
 ```
 
-sherpa-onnx 库已内置在 `src/third_party/sherpa-onnx/`，模型需单独下载：
+### 选择性安装（推荐，x86_64 / aarch64 通用）
+
+`setup.sh` 会按架构自动选择 sherpa-onnx 运行时（x86_64 → `linux-x64-shared`，
+aarch64 / Jetson → `linux-aarch64-shared-cpu`），并按组件安装依赖与模型：
 
 ```bash
-# Zipformer CTC 中文ASR模型 (推荐)
+./setup.sh                              # 默认 client: core + sherpa + edge_tts
+./setup.sh --profile minimal            # 仅 core + sherpa（纯本地，espeak 兜底 TTS）
+./setup.sh --with piper                 # 追加 Piper 本地 TTS
+./setup.sh --without edge               # 去掉 edge_tts
+./setup.sh --all                        # = full: core + sherpa + edge + piper + embedding
+./setup.sh --dry-run --profile client   # 只打印将要下载/安装的内容，不落地
+./setup.sh --run                        # 装完直接运行
+```
+
+| 组件 | 内容 |
+|------|------|
+| `core` | 构建工具链、espeak-ng、ALSA、仓库内 `.venv`（总是安装） |
+| `sherpa` | sherpa-onnx 运行时（按架构选包）+ SenseVoice ASR + CAM++ 声纹 |
+| `edge` | edge_tts 云端 TTS（ffmpeg + pip `edge-tts`） |
+| `piper` | Piper 本地 TTS（pip `piper-tts` + 音色模型） |
+| `embedding` | RAG 向量模型（pip torch/modelscope + 导出 bge-small-zh ONNX） |
+
+编译期还需要 onnxruntime 头文件（sherpa 包只带 `.so`，不带头文件），
+`setup.sh` 会按架构一并下载到 `src/third_party/onnxruntime/include/`。
+
+Python 依赖放在仓库内 `.venv`（`requirements/*.txt` 按组件拆分），
+C++ 侧按 `VOICE_PYTHON` → `.venv` → conda → 系统 Python 的顺序查找解释器。
+
+**aarch64 / Jetson 提示**：`torch` / `onnxruntime` 的 aarch64 wheel 通常不在 PyPI，
+用 `--with embedding` 前先设置厂商源：
+
+```bash
+export PIP_EXTRA_INDEX_URL=https://pypi.jetson-ai-lab.dev/jp6/cu126
+```
+
+更省事的做法是在 x86 上跑一次 `scripts/export_embedding_model.py`，
+把生成的 `models/embedding/` 拷到 ARM 机器（运行期只依赖 onnxruntime）。
+
+手动准备 ASR 模型（`config.json` 当前指向 Zipformer CTC 中文模型）：
+
+```bash
 mkdir -p src/third_party/sherpa-onnx/zipformer-ctc-zh
 wget https://hf-mirror.com/csukuangfj/sherpa-onnx-zipformer-ctc-zh-int8-2025-07-03/resolve/main/model.int8.onnx \
      -O src/third_party/sherpa-onnx/zipformer-ctc-zh/model.int8.onnx
@@ -142,13 +180,18 @@ wget https://hf-mirror.com/csukuangfj/sherpa-onnx-zipformer-ctc-zh-int8-2025-07-
 ### 编译运行
 
 ```bash
+./setup.sh --build        # 或按上面的选择性安装一步到位
+
+# 回到项目根目录运行
+./src/build/voice_pipeline
+```
+
+手动编译（等价）：
+
+```bash
 cd src && mkdir -p build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 cmake --build . -j$(nproc)
-
-# 回到项目根目录运行
-cd ../..
-./build/voice_pipeline
 ```
 
 ### 交互模式

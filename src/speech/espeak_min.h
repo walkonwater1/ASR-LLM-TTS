@@ -2,7 +2,8 @@
 /**
  * espeak-ng 最小化 C API 声明
  *
- * libespeak-ng.so 已安装在 /usr/lib/x86_64-linux-gnu/libespeak-ng.so.1
+ * libespeak-ng.so.1 由 espeak-ng 包提供（x86_64: /usr/lib/x86_64-linux-gnu/,
+ * aarch64: /usr/lib/aarch64-linux-gnu/），路径由 CMake 的 find_library 解析。
  * 不需要 -dev 包，直接声明所需函数即可。
  */
 

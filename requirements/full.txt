@@ -1,0 +1,5 @@
+# full profile 的 Python 依赖（供手动 pip install -r 使用）
+# setup.sh 会按组件分别安装，不必依赖本文件。
+-r edge.txt
+-r piper.txt
+-r embedding.txt

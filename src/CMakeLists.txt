@@ -12,8 +12,18 @@ find_package(Boost REQUIRED COMPONENTS system)
 find_package(websocketpp QUIET)  # header-only, optional
 find_package(spdlog REQUIRED)
 
-# espeak-ng (libespeak-ng.so.1 已安装，手动指定路径)
-set(ESPEAK_LIB "/usr/lib/x86_64-linux-gnu/libespeak-ng.so.1")
+# espeak-ng: 只装 runtime 包时没有 libespeak-ng.so 开发符号链接，
+# 因此 find_library 失败后按多架构目录直接找带版本后缀的 .so.1
+find_library(ESPEAK_LIB NAMES espeak-ng)
+if(NOT ESPEAK_LIB)
+    find_file(ESPEAK_LIB NAMES libespeak-ng.so.1
+              PATHS /usr/lib/${CMAKE_LIBRARY_ARCHITECTURE} /usr/lib
+              NO_DEFAULT_PATH)
+endif()
+if(NOT ESPEAK_LIB)
+    message(FATAL_ERROR "libespeak-ng 未找到，请安装: sudo apt install espeak-ng libespeak-ng-dev")
+endif()
+message(STATUS "espeak-ng: ${ESPEAK_LIB} (multiarch: ${CMAKE_LIBRARY_ARCHITECTURE})")
 
 # sherpa-onnx (可选 — 不装也能编译，ASR/SV 降级运行)
 set(SHERPA_ONNX_DIR "${CMAKE_SOURCE_DIR}/third_party/sherpa-onnx")

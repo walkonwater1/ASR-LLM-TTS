@@ -1,0 +1,5 @@
+# edge 组件 — 云端 TTS (src/scripts/edge_tts_cli.py)
+#
+# 另需系统包 ffmpeg（setup.sh 的 install_deps 会自动安装），
+# 用于把 edge-tts 返回的 mp3 转成 16k 单声道 wav。
+edge-tts

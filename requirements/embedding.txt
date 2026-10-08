@@ -1,0 +1,13 @@
+# embedding 组件 — 离线导出 RAG 向量模型 (scripts/export_embedding_model.py)
+#
+# 只在“导出模型”时需要。导出完成后，运行期只依赖 onnxruntime。
+#
+# aarch64 注意: torch / onnxruntime 的 aarch64 wheel 通常不在 PyPI，
+# 需要厂商源，例如 Jetson:
+#   export PIP_EXTRA_INDEX_URL=https://pypi.jetson-ai-lab.dev/jp6/cu126
+# 更省事的替代方案: 在 x86 上跑一次导出脚本，把 models/embedding/
+# 拷到 ARM 机器，ARM 侧改为只装 onnxruntime。
+torch
+transformers
+modelscope
+onnxruntime

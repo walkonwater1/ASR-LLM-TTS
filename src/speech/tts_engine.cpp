@@ -457,6 +457,39 @@ static std::string find_script(const std::string& name)
     return name;  // fallback
 }
 
+// 查找 Python 解释器（piper / edge_tts 都用它）：
+//   VOICE_PYTHON > 仓库内 .venv > conda > 系统
+// .venv 刻意排在 CONDA_PREFIX 之前，否则 conda 激活会一直遮蔽它。
+static const std::string& find_python()
+{
+    static std::string cached;
+
+    if (!cached.empty()) return cached;
+
+    if (const char* vp = std::getenv("VOICE_PYTHON")) {
+        if (vp[0] && file_exists(vp)) { cached = vp; return cached; }
+    }
+
+    std::vector<std::string> candidates;
+    candidates.push_back(".venv/bin/python3");   // setup.sh 在仓库根创建，run() 会 cd 过去
+
+    if (const char* cp = std::getenv("CONDA_PREFIX")) {
+        candidates.push_back(std::string(cp) + "/bin/python3");
+    }
+    if (const char* home = std::getenv("HOME")) {
+        candidates.push_back(std::string(home) + "/miniconda3/envs/chatAudio/bin/python3");
+        candidates.push_back(std::string(home) + "/miniconda3/bin/python3");
+    }
+    candidates.push_back("/usr/bin/python3");
+
+    for (const auto& p : candidates) {
+        if (file_exists(p)) { cached = p; return cached; }
+    }
+
+    cached = "python3";  // 兜底：交给 PATH 查找
+    return cached;
+}
+
 // ── TTSEngine ────────────────────────────────────────
 
 TTSEngine::TTSEngine(int rate, const std::string& voice,
@@ -633,22 +666,8 @@ bool TTSEngine::init_piper()
     if (dot != std::string::npos) voice_name = voice_name.substr(0, dot);
     std::cout << "[TTS] Piper (" << voice_name << ") ... " << std::flush;
 
-    // 找 conda Python
-    std::string python = "python3";
-    const char* home = std::getenv("HOME");
-    const char* conda_prefix = std::getenv("CONDA_PREFIX");
-
-    std::vector<std::string> py_candidates;
-    if (conda_prefix) py_candidates.push_back(std::string(conda_prefix) + "/bin/python3");
-    if (home) {
-        py_candidates.push_back(std::string(home) + "/miniconda3/envs/chatAudio/bin/python3");
-        py_candidates.push_back(std::string(home) + "/miniconda3/bin/python3");
-    }
-    py_candidates.push_back("/usr/bin/python3");
-
-    for (const auto& p : py_candidates) {
-        if (file_exists(p)) { python = p; break; }
-    }
+    // 找 Python 解释器（.venv / conda / 系统）
+    const std::string& python = find_python();
 
     // 找 piper_server.py
     piper_script_ = find_script("piper_server.py");
@@ -833,10 +852,15 @@ bool TTSEngine::init_edge_tts()
     std::cout << "(" << edge_tts_script_ << ") " << std::flush;
 
     // 验证 Python 环境和 edge_tts 库可用
-    std::string test_cmd = "python3 " + edge_tts_script_ + " --help > /dev/null 2>&1";
-    int ret = system(test_cmd.c_str());
+    // std::quoted 返回流代理对象，只能用 << 拼接，不能 operator+
+    std::ostringstream test_cmd;
+    test_cmd << std::quoted(find_python()) << " "
+             << std::quoted(edge_tts_script_) << " --help > /dev/null 2>&1";
+    int ret = system(test_cmd.str().c_str());
     if (ret != 0) {
-        std::cerr << "❌ edge_tts 不可用 (exit=" << ret << ", 请确认: pip install edge-tts)" << std::endl;
+        std::cerr << "❌ edge_tts 不可用 (exit=" << ret
+                  << ", 请确认: " << find_python() << " -m pip install edge-tts"
+                  << " 或 ./setup.sh --with edge)" << std::endl;
         return false;
     }
 
@@ -867,7 +891,7 @@ bool TTSEngine::synthesize_edge_tts(const std::string& text, const std::string& 
     // 注意: 不依赖 pclose() 返回值，因为 voice_pipeline 可能有 SIGCHLD 干扰
     // 直接检查输出文件是否生成成功即可
     std::ostringstream cmd;
-    cmd << "python3 " << edge_tts_script_
+    cmd << std::quoted(find_python()) << " " << std::quoted(edge_tts_script_)
         << " --text " << std::quoted(content)
         << " --voice " << edge_tts_voice_
         << " --output " << output_path;

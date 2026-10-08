@@ -94,15 +94,15 @@ bool SpeakerVerifier::initialize()
         LOG_ERROR("❌ 创建 embedding manager 失败");
         return false;
     }
+
+    initialized_ = true;
+    std::cout << "✅ (dim=" << dim << ")" << std::endl;
+    return true;
 #else
     LOG_WARN("⚠️  sherpa-onnx 未安装（跳过）");
     initialized_ = true;
     return true;
 #endif
-
-    initialized_ = true;
-    std::cout << "✅ (dim=" << SherpaOnnxSpeakerEmbeddingExtractorDim(extractor_) << ")" << std::endl;
-    return true;
 }
 
 bool SpeakerVerifier::has_enrolled() const
