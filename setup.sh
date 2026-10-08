@@ -285,10 +285,13 @@ download_file() {
     for u in "${urls[@]}"; do
         local part="${output}.part"
         rm -f "$part"
+        # --tries/--retry: GitHub 等链路会瞬时抖动（实测有连接超时后重试即成功），
+        # 单纯 --tries=1 会让偶发失败直接终止安装；timeout 保证失败有界
         if command -v wget &>/dev/null; then
-            wget -q --show-progress --timeout=20 --tries=1 -O "$part" "$u" 2>&1 || true
+            wget -q --show-progress --timeout=20 --tries=3 --waitretry=3 -O "$part" "$u" 2>&1 || true
         elif command -v curl &>/dev/null; then
-            curl -L -# --connect-timeout 15 -o "$part" "$u" 2>&1 || true
+            curl -L -# --connect-timeout 15 --retry 3 --retry-delay 3 \
+                 --retry-connrefused -o "$part" "$u" 2>&1 || true
         else
             err "需要 wget 或 curl，请先安装"
             exit 1
@@ -332,8 +335,9 @@ install_sherpa_onnx() {
 
     info "下载 sherpa-onnx v${SHERPA_VERSION} (${SHERPA_ASSET}) ..."
 
-    # 先确认 asset 存在，避免把 404 页面当压缩包存下来
-    if command -v curl &>/dev/null && ! curl -sfIL "$SHERPA_URL" >/dev/null 2>&1; then
+    # 先确认 asset 存在，避免把 404 页面当压缩包存下来（timeout: 链路抖动时不空转）
+    if command -v curl &>/dev/null && \
+       ! curl -sfIL --connect-timeout 10 --max-time 25 "$SHERPA_URL" >/dev/null 2>&1; then
         err "资源不存在或网络不可达: ${SHERPA_URL}"
         err "请确认 ${TARGET_ARCH} 对应的构建变体（表在 setup.sh 顶部 SHERPA_VARIANT）"
         return 1
@@ -344,12 +348,8 @@ install_sherpa_onnx() {
 
     local tar_path="${tmp_dir}/${SHERPA_TAR}"
 
-    # 下载
-    if command -v wget &>/dev/null; then
-        wget -q --show-progress -O "$tar_path" "$SHERPA_URL" || true
-    else
-        curl -L -# -o "$tar_path" "$SHERPA_URL" || true
-    fi
+    # 下载（复用 download_file: 带超时与重试，避免链路抖动直接失败）
+    download_file "$SHERPA_URL" "$tar_path" "sherpa-onnx 运行时" || true
 
     if [ ! -f "$tar_path" ] || [ ! -s "$tar_path" ]; then
         err "下载 sherpa-onnx 失败"
@@ -416,7 +416,8 @@ install_onnxruntime_headers() {
 
     info "下载 onnxruntime ${ORT_VERSION} 头文件 (${PKG_ARCH}) ..."
 
-    if command -v curl &>/dev/null && ! curl -sfIL "$ORT_URL" >/dev/null 2>&1; then
+    if command -v curl &>/dev/null && \
+       ! curl -sfIL --connect-timeout 10 --max-time 25 "$ORT_URL" >/dev/null 2>&1; then
         err "资源不存在或网络不可达: ${ORT_URL}"
         err "请确认 ORT_VERSION（当前 ${ORT_VERSION}）是否与 sherpa 内置 libonnxruntime.so 匹配"
         return 1
@@ -425,11 +426,8 @@ install_onnxruntime_headers() {
     local tmp_dir="/tmp/onnxruntime-$$"
     mkdir -p "$tmp_dir"
 
-    if command -v wget &>/dev/null; then
-        wget -q --show-progress -O "${tmp_dir}/${ORT_TAR}" "$ORT_URL" || true
-    else
-        curl -L -# -o "${tmp_dir}/${ORT_TAR}" "$ORT_URL" || true
-    fi
+    # 复用 download_file: 带超时与重试
+    download_file "$ORT_URL" "${tmp_dir}/${ORT_TAR}" "onnxruntime 头文件" || true
 
     if [ ! -s "${tmp_dir}/${ORT_TAR}" ]; then
         err "下载 onnxruntime 失败"
