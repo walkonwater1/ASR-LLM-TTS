@@ -25,7 +25,7 @@
 #   client     core sherpa edge        （默认；带麦克风的交互终端）
 #   full       core sherpa edge piper embedding   （--all 同义）
 #
-# 硬件: CPU only, 无需 GPU（x86_64 / Jetson 等 aarch64）
+# 硬件: CPU only, 无需 GPU（x86_64 / Debian·Armbian·Jetson 等 aarch64）
 # 系统: Ubuntu 20.04+
 
 set -euo pipefail
@@ -97,6 +97,9 @@ ORT_DIR="${THIRD_PARTY_DIR}/onnxruntime"
 # ── 模型下载地址（HF Mirror 国内更快）─────────────────────
 HF_BASE="https://huggingface.co"
 HF_MIRROR="https://hf-mirror.com"
+HF_PROBE=""   # 空 = 未探测；1 = HF 可达；0 = 不可达
+
+GITHUB_RELEASE="https://github.com/k2-fsa/sherpa-onnx/releases/download"
 
 # ASR 模型: SenseVoice Small int8 (~228MB)
 ASR_MODEL_REPO="csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
@@ -107,9 +110,13 @@ ASR_MODEL_FILES=(
 ASR_MODEL_DIR="${SHERPA_DIR}/sense-voice-model"
 
 # 声纹模型: CAM++ (~27MB)
-SV_MODEL_REPO="csukuangfj/sherpa-onnx-speaker-verification"
+# 注意: 该模型只在 GitHub release 上发布，HF 上没有对应仓库
+#       (csukuangfj/sherpa-onnx-speaker-verification → 401)，因此不走进 HF
 SV_MODEL_FILES=(
     "3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx"
+)
+SV_MODEL_URLS=(
+    "${GITHUB_RELEASE}/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx"
 )
 SV_MODEL_DIR="${SHERPA_DIR}/speaker-verification-model"
 
@@ -226,7 +233,25 @@ install_deps() {
     fi
 }
 
-# ── 步骤2: 下载函数（优先 HF 镜像） ────────────────────────
+# ── 步骤2: 下载函数（HF / HF 镜像自动择优） ────────────────
+
+# HF 可达性探测（一次，结果缓存到 HF_PROBE）
+# 目的: HF 被墙时先走镜像，避免 wget 在不可达端点上空转数十秒
+hf_first() {
+    if [ -n "$HF_PROBE" ]; then
+        [ "$HF_PROBE" = "1" ]
+        return
+    fi
+    if [ "$DRY_RUN" = "1" ] || ! command -v curl >/dev/null 2>&1; then
+        HF_PROBE="1"
+    elif curl -sfI --connect-timeout 5 --max-time 8 "${HF_BASE}/" >/dev/null 2>&1; then
+        HF_PROBE="1"
+    else
+        HF_PROBE="0"
+        warn "huggingface.co 不可达，改用镜像 ${HF_MIRROR}"
+    fi
+    [ "$HF_PROBE" = "1" ]
+}
 
 download_file() {
     local url="$1"
@@ -243,26 +268,39 @@ download_file() {
         return 0
     fi
 
+    # 组装候选源（仅 HF 域名参与镜像替换）
+    local -a urls=()
+    local mirror_url="${url/${HF_BASE}/${HF_MIRROR}}"
+    if [ "$mirror_url" != "$url" ]; then
+        if hf_first; then urls=("$url" "$mirror_url"); else urls=("$mirror_url" "$url"); fi
+    else
+        urls=("$url")
+    fi
+
     info "下载: ${desc} ..."
     mkdir -p "$(dirname "$output")"
 
-    # 尝试多个下载源
-    if command -v wget &>/dev/null; then
-        wget -q --show-progress -O "$output" "$url" 2>&1 || {
-            warn "wget 失败，换镜像重试..."
-            local mirror_url="${url/${HF_BASE}/${HF_MIRROR}}"
-            wget -q --show-progress -O "$output" "$mirror_url" 2>&1
-        }
-    elif command -v curl &>/dev/null; then
-        curl -L -# -o "$output" "$url" 2>&1 || {
-            warn "curl 失败，换镜像重试..."
-            local mirror_url="${url/${HF_BASE}/${HF_MIRROR}}"
-            curl -L -# -o "$output" "$mirror_url" 2>&1
-        }
-    else
-        err "需要 wget 或 curl，请先安装"
-        exit 1
-    fi
+    # 逐个源尝试；下载到 .part 再原子改名，避免半截文件被当成"已存在"
+    local u
+    for u in "${urls[@]}"; do
+        local part="${output}.part"
+        rm -f "$part"
+        if command -v wget &>/dev/null; then
+            wget -q --show-progress --timeout=20 --tries=1 -O "$part" "$u" 2>&1 || true
+        elif command -v curl &>/dev/null; then
+            curl -L -# --connect-timeout 15 -o "$part" "$u" 2>&1 || true
+        else
+            err "需要 wget 或 curl，请先安装"
+            exit 1
+        fi
+
+        if [ -s "$part" ]; then
+            mv "$part" "$output"
+            break
+        fi
+        rm -f "$part"
+        warn "下载失败: ${u}"
+    done
 
     if [ -f "$output" ]; then
         log "下载完成: ${desc} ($(du -h "$output" | cut -f1))"
@@ -457,9 +495,10 @@ install_models() {
     else
         info "下载声纹模型 (CAM++, ~27MB)..."
         if [ "$DRY_RUN" != "1" ]; then mkdir -p "$SV_MODEL_DIR"; fi
-        local f
-        for f in "${SV_MODEL_FILES[@]}"; do
-            download_hf_model "$SV_MODEL_REPO" "$f" "$SV_MODEL_DIR" "SV: $f"
+        local i f
+        for i in "${!SV_MODEL_FILES[@]}"; do
+            f="${SV_MODEL_FILES[$i]}"
+            download_file "${SV_MODEL_URLS[$i]}" "${SV_MODEL_DIR}/${f}" "SV: $f"
         done
         log "声纹模型下载完成"
     fi

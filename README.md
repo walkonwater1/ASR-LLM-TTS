@@ -131,7 +131,7 @@ ollama pull qwen2.5:3b
 ### 选择性安装（推荐，x86_64 / aarch64 通用）
 
 `setup.sh` 会按架构自动选择 sherpa-onnx 运行时（x86_64 → `linux-x64-shared`，
-aarch64 / Jetson → `linux-aarch64-shared-cpu`），并按组件安装依赖与模型：
+aarch64 → `linux-aarch64-shared-cpu`），并按组件安装依赖与模型：
 
 ```bash
 ./setup.sh                              # 默认 client: core + sherpa + edge_tts
@@ -157,8 +157,11 @@ aarch64 / Jetson → `linux-aarch64-shared-cpu`），并按组件安装依赖与
 Python 依赖放在仓库内 `.venv`（`requirements/*.txt` 按组件拆分），
 C++ 侧按 `VOICE_PYTHON` → `.venv` → conda → 系统 Python 的顺序查找解释器。
 
-**aarch64 / Jetson 提示**：`torch` / `onnxruntime` 的 aarch64 wheel 通常不在 PyPI，
-用 `--with embedding` 前先设置厂商源：
+**aarch64 提示**：`torch` / `onnxruntime` 的 aarch64 wheel 覆盖不如 x86_64 完整。
+`embedding` 是非必需组件，装不上时脚本只告警、不中断整体安装。
+
+- **Debian / Ubuntu / Armbian**（普通 aarch64 终端）：多数情况 `pip install` 直接可用，无需额外源。
+- **NVIDIA Jetson（JetPack）**：需要厂商源，例如：
 
 ```bash
 export PIP_EXTRA_INDEX_URL=https://pypi.jetson-ai-lab.dev/jp6/cu126
