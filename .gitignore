@@ -77,3 +77,6 @@ src/third_party/
 speaker_voice/
 speaker_voice_library/
 voiceprint_library/
+
+# 本地临时下载/解包产物
+.local/

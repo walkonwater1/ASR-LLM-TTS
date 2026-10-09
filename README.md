@@ -154,6 +154,33 @@ aarch64 → `linux-aarch64-shared-cpu`），并按组件安装依赖与模型：
 编译期还需要 onnxruntime 头文件（sherpa 包只带 `.so`，不带头文件），
 `setup.sh` 会按架构一并下载到 `src/third_party/onnxruntime/include/`。
 
+> **aarch64 注意**：sherpa-onnx 的 aarch64 release 包**不含 `include/`**
+> （x64 的 `-shared` 包含，aarch64 的 `-shared-cpu` 只有 `bin/` 和 `lib/`）。
+> 缺头文件时 `<sherpa-onnx/c-api/c-api.h>` 找不到，CMake 会判定 sherpa 不可用
+> 并**静默**编译出降级版本。`setup.sh` 已自动处理：按 tag 从源码补这两个
+> 头文件（与 x64 包内逐字节一致）。
+
+### 目标机连不上 GitHub / HuggingFace 时
+
+部分网络环境下目标机拉不到 GitHub release 与 HuggingFace（本项目的 ARM
+板子即如此：`huggingface.co` 不可达、`github.com` 连接时通时断）。这种情况
+在**有网络的机器**上先抓一份资产包，再拷过去离线安装：
+
+```bash
+# 联网机器（架构可以不同，用 --arch 指定目标架构）
+./setup.sh --fetch-assets ~/arm-assets --arch aarch64
+
+# 拷到目标机
+scp -r ~/arm-assets root@<目标机>:~/
+
+# 目标机：不再访问 GitHub / HuggingFace
+./setup.sh --profile client --offline-dir ~/arm-assets
+```
+
+资产包约 288MB（sherpa 运行时 + onnxruntime 头文件 + ASR/声纹模型）。
+`--offline-dir` 按文件名匹配，命中就不走网络；缺件会告警并回退到网络下载，
+不会静默少装。`--fetch-assets` 抓完会做归档自检，避免把半截包拷过去。
+
 Python 依赖放在仓库内 `.venv`（`requirements/*.txt` 按组件拆分），
 C++ 侧按 `VOICE_PYTHON` → `.venv` → conda → 系统 Python 的顺序查找解释器。
 
@@ -170,15 +197,20 @@ export PIP_EXTRA_INDEX_URL=https://pypi.jetson-ai-lab.dev/jp6/cu126
 更省事的做法是在 x86 上跑一次 `scripts/export_embedding_model.py`，
 把生成的 `models/embedding/` 拷到 ARM 机器（运行期只依赖 onnxruntime）。
 
-手动准备 ASR 模型（`config.json` 当前指向 Zipformer CTC 中文模型）：
+ASR 模型（`config.json` 指向 SenseVoice，`setup.sh` 会自动下载；
+以下是无外网时的手工等价命令）：
 
 ```bash
-mkdir -p src/third_party/sherpa-onnx/zipformer-ctc-zh
-wget https://hf-mirror.com/csukuangfj/sherpa-onnx-zipformer-ctc-zh-int8-2025-07-03/resolve/main/model.int8.onnx \
-     -O src/third_party/sherpa-onnx/zipformer-ctc-zh/model.int8.onnx
-wget https://hf-mirror.com/csukuangfj/sherpa-onnx-zipformer-ctc-zh-int8-2025-07-03/resolve/main/tokens.txt \
-     -O src/third_party/sherpa-onnx/zipformer-ctc-zh/tokens.txt
+mkdir -p src/third_party/sherpa-onnx/sense-voice-model
+wget https://hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/model.int8.onnx \
+     -O src/third_party/sherpa-onnx/sense-voice-model/model.int8.onnx
+wget https://hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt \
+     -O src/third_party/sherpa-onnx/sense-voice-model/tokens.txt
 ```
+
+引擎同时支持 Zipformer CTC：把 `config.json` 的 `model_type` 改成 `zipformer_ctc`、
+`model_path` 指向对应模型目录即可（`asr_engine.cpp` 按类型切换 sherpa 的模型配置）。
+两种类型都要求目录下是 `model.int8.onnx` + `tokens.txt`。
 
 ### 编译运行
 
@@ -231,8 +263,8 @@ src/
 ```json
 {
   "asr": {
-    "model_path": "src/third_party/sherpa-onnx/zipformer-ctc-zh",
-    "model_type": "zipformer_ctc"
+    "model_path": "src/third_party/sherpa-onnx/sense-voice-model",
+    "model_type": "sense_voice"
   },
   "llm": { "host": "http://localhost:11434", "model": "qwen2.5:3b" },
   "tts": { "backend": "edge_tts", "rate": 200, "voice": "cmn+f3",

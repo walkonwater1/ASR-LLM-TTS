@@ -1,7 +1,7 @@
 {
   "asr": {
-    "model_path": "src/third_party/sherpa-onnx/zipformer-ctc-zh",
-    "model_type": "zipformer_ctc"
+    "model_path": "src/third_party/sherpa-onnx/sense-voice-model",
+    "model_type": "sense_voice"
   },
   "llm": {
     "host": "http://192.168.10.54:11434",
