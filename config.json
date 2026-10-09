@@ -23,7 +23,8 @@
     "threshold": 0.35
   },
   "audio": {
-    "sample_rate": 16000
+    "sample_rate": 16000,
+    "capture_device": "plughw:1,0"
   },
   "vad": {
     "backend": "adaptive",

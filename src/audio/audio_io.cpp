@@ -25,8 +25,8 @@
 
 // ── AudioRecorder ────────────────────────────────────
 
-AudioRecorder::AudioRecorder(int sample_rate)
-    : sample_rate_(sample_rate)
+AudioRecorder::AudioRecorder(int sample_rate, const std::string& device)
+    : sample_rate_(sample_rate), device_(device)
 {}
 
 bool AudioRecorder::record(const std::string& output_path)
@@ -40,12 +40,22 @@ bool AudioRecorder::record(const std::string& output_path)
     if (pid == 0) {
         // 子进程：执行 arecord
         std::string rate_str = std::to_string(sample_rate_);
-        execlp("arecord", "arecord",
-               "-f", "S16_LE",
-               "-r", rate_str.c_str(),
-               "-c", "1",
-               output_path.c_str(),
-               nullptr);
+        if (device_.empty()) {
+            execlp("arecord", "arecord",
+                   "-f", "S16_LE",
+                   "-r", rate_str.c_str(),
+                   "-c", "1",
+                   output_path.c_str(),
+                   nullptr);
+        } else {
+            execlp("arecord", "arecord",
+                   "-D", device_.c_str(),
+                   "-f", "S16_LE",
+                   "-r", rate_str.c_str(),
+                   "-c", "1",
+                   output_path.c_str(),
+                   nullptr);
+        }
         _exit(1);   // execlp 失败
     }
 

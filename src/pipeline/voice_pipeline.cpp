@@ -110,7 +110,7 @@ VoicePipeline::VoicePipeline(const PipelineConfig& cfg)
     , kws_(cfg.wake_words.empty() ? cfg.wake_word : "" )
     , speaker_(cfg.sv_enroll_dir, cfg.sv_threshold)
     , memory_(cfg.max_rounds, cfg.max_tokens)
-    , recorder_(cfg.sample_rate)
+    , recorder_(cfg.sample_rate, cfg.audio_capture_device)
 {
     // 多唤醒词：在构造函数体中重新初始化 kws_
     if (!cfg_.wake_words.empty()) {
@@ -950,6 +950,7 @@ void VoicePipeline::reload_config(const PipelineConfig& new_cfg)
     warn_if("embedding_backend",  cfg_.embedding_backend,  new_cfg.embedding_backend);
     warn_if("embedding_model_dir",cfg_.embedding_model_dir,new_cfg.embedding_model_dir);
     warn_if("sample_rate",        cfg_.sample_rate,        new_cfg.sample_rate);
+    warn_if("capture_device",     cfg_.audio_capture_device, new_cfg.audio_capture_device);
 
     // vad_backend 也需要重建 VAD 对象
     if (warn_if("vad_backend", cfg_.vad_backend, new_cfg.vad_backend)) {
@@ -1105,8 +1106,13 @@ void VoicePipeline::stop_interactive()
 void VoicePipeline::capture_loop()
 {
     // 打开 arecord 管道: 持续输出 raw 16-bit PCM
-    FILE* pipe = popen(
-        "arecord -f S16_LE -r 16000 -c 1 -t raw -q 2>/dev/null", "r");
+    // capture_device 为空时不传 -D，沿用 ALSA 默认设备（原有行为）
+    const std::string& dev = cfg_.audio_capture_device;
+    std::string arecord_cmd = "arecord ";
+    if (!dev.empty()) arecord_cmd += "-D " + dev + " ";
+    arecord_cmd += "-f S16_LE -r 16000 -c 1 -t raw -q 2>/dev/null";
+
+    FILE* pipe = popen(arecord_cmd.c_str(), "r");
     if (!pipe) {
         LOG_ERROR("❌ 无法启动录音设备");
         interactive_running_ = false;
@@ -1148,14 +1154,17 @@ void VoicePipeline::capture_loop()
     std::string asr_last_partial;     // 上一帧的部分识别文本
     int   asr_stable_frames  = 0;    // 文本连续不变的帧数
 
-    std::cout << "🎙️  麦克风已开启，开始监听... (VAD: " << cfg_.vad_backend << ")" << std::endl;
+    std::cout << "🎙️  麦克风已开启，开始监听... (VAD: " << cfg_.vad_backend
+              << ", 设备: " << (dev.empty() ? "默认" : dev) << ")" << std::endl;
 
     while (interactive_running_) {
         // 读一帧音频
         size_t nread = fread(raw_buf.data(), 1, frame_bytes, pipe);
         if (nread != (size_t)frame_bytes) {
             if (interactive_running_) {
-                LOG_WARN("⚠️ 录音读取异常");
+                LOG_WARN("⚠️ 录音读取异常 (设备: {}，arecord 已退出，"
+                         "用 `arecord -l` 确认采集设备号)",
+                         dev.empty() ? "默认" : dev);
             }
             break;
         }

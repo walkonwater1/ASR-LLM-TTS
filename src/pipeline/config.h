@@ -46,6 +46,10 @@ struct PipelineConfig {
 
     // ── 音频 ───────────────────────────────────────
     int sample_rate = 16000;
+    // arecord 采集设备，如 "plughw:1,0"（空 = 用 ALSA 默认设备）
+    // 板载声卡常见问题：ALSA 默认指向只有播放没有采集的 card 0，
+    // 此时必须显式指定 USB 麦克风，否则 arecord 秒退、录音线程立刻结束
+    std::string audio_capture_device = "";
 
     // ── VAD（语音活动检测 / 打断灵敏度）─────────────
     std::string vad_backend          = "energy";   // "energy" 或 "adaptive"

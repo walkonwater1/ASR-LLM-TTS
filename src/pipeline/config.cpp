@@ -103,6 +103,7 @@ bool PipelineConfig::load_from_file(const std::string& path)
     // ── 音频 ───────────────────────────────────────
     if (j.contains("audio")) {
         try_get(j["audio"], "sample_rate", sample_rate);
+        try_get(j["audio"], "capture_device", audio_capture_device);
     }
 
     // ── VAD ────────────────────────────────────────

@@ -14,7 +14,8 @@
 class AudioRecorder {
 public:
     /// @param sample_rate  采样率 (Hz)，sensevoice 需要 16000
-    explicit AudioRecorder(int sample_rate = 16000);
+    /// @param device       arecord 采集设备，如 "plughw:1,0"（空 = ALSA 默认）
+    explicit AudioRecorder(int sample_rate = 16000, const std::string& device = "");
 
     /// 交互式录音：提示按 Enter → 录音 → 再按 Enter 停止 → 保存 WAV
     /// @param output_path  输出 WAV 文件路径
@@ -26,6 +27,7 @@ public:
 
 private:
     int sample_rate_;
+    std::string device_;
 };
 
 
